@@ -19,7 +19,7 @@ HUB=os.environ.get('ZIOKT_RELEASE_REPO','txmu/Ziokt-Releases')
 
 
 def gh(*args,check=True):
-    result=subprocess.run(['gh',*map(str,args)],capture_output=True,text=True,timeout=120)
+    result=subprocess.run(['gh',*map(str,args)],capture_output=True,text=True,timeout=1800 if args[:2]==('release','upload') else 120)
     if check and result.returncode:raise RuntimeError('GitHub operation failed: '+' '.join(str(a) for a in args[:4])+': '+result.stderr[:256])
     return result
 
@@ -97,7 +97,7 @@ def publish_run(repository,run_id,directory):
     return records
 
 
-def publish(repository=None,run_id=None,limit=3):
+def publish(repository=None,run_id=None,limit=100):
     validate_repository(HUB)
     with tempfile.TemporaryDirectory(prefix='ziokt-release-') as temporary:
         area=Path(temporary);catalog=prior_catalog(area);records={r['id']:r for r in catalog['artifacts']}
@@ -118,6 +118,7 @@ def publish(repository=None,run_id=None,limit=3):
         print(json.dumps({'repository':HUB,'catalog_artifacts':len(records),'catalog_sha256':file_sha(path)}))
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--source');p.add_argument('--run',type=int);p.add_argument('--limit',type=int,default=3);a=p.parse_args()
-    if not 1<=a.limit<=20:p.error('limit must be 1..20')
+    p=argparse.ArgumentParser();p.add_argument('--source');p.add_argument('--run',type=int);p.add_argument('--limit',type=int,default=100);a=p.parse_args()
+    if not 1<=a.limit<=100:p.error('limit must be 1..100')
+    if a.run and not a.source:p.error('--run requires --source')
     publish(a.source,a.run,a.limit)
