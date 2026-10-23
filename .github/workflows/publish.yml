@@ -1,0 +1,39 @@
+name: Collect ecosystem build Releases
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Source repository (empty collects configured repositories)
+        type: string
+      run:
+        description: Exact completed Actions run (empty examines recent runs)
+        type: string
+  schedule:
+    - cron: '*/20 * * * *'
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: ecosystem-release-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Collect only owner build events with provenance and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source }}
+          RUN: ${{ inputs.run }}
+        run: |
+          args=()
+          if [ -n "$SOURCE" ]; then args+=(--source "$SOURCE"); fi
+          if [ -n "$RUN" ]; then args+=(--run "$RUN"); fi
+          python tools/publish.py "${args[@]}"
