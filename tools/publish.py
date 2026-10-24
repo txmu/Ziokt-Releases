@@ -88,7 +88,7 @@ def publish_run(repository,run_id,directory):
     if not exists.returncode:
         old=directory/(tag+'-existing');old.mkdir()
         result=gh('release','download',tag,'--repo',HUB,'--pattern','build-manifest.json','--dir',old)
-        return json.loads((old/'build-manifest.json').read_text())['artifacts']
+        return [dict(item,all_revision_workflows_passed=True,verified_revision_workflows=checks) for item in json.loads((old/'build-manifest.json').read_text())['artifacts']]
     area=directory/tag;area.mkdir();records=[]
     for artifact in artifacts:
         name=artifact['name']
@@ -101,7 +101,7 @@ def publish_run(repository,run_id,directory):
         digest=file_sha(path);declared=artifact.get('digest')
         if declared and declared!='sha256:'+digest:raise ValueError('source Actions artifact digest mismatch')
         members=archive_members(path)
-        records.append({'id':repository+'/'+name,'name':name,'kind':'github-actions-artifact-zip','file':path.name,'url':f'https://github.com/{HUB}/releases/download/{quote(tag,safe="")}/{quote(path.name,safe="")}', 'sha256':digest,'bytes':path.stat().st_size,'source_repository':repository,'source_revision':run['head_sha'],'source_run':run['html_url'],'source_run_conclusion':run['conclusion'],'source_artifact_id':artifact['id'],'source_artifact_digest_verified':bool(declared),'individual_business_acceptance':'not_assessed','files':members})
+        records.append({'id':repository+'/'+name,'name':name,'kind':'github-actions-artifact-zip','file':path.name,'url':f'https://github.com/{HUB}/releases/download/{quote(tag,safe="")}/{quote(path.name,safe="")}', 'sha256':digest,'bytes':path.stat().st_size,'source_repository':repository,'source_revision':run['head_sha'],'source_run':run['html_url'],'source_run_conclusion':run['conclusion'],'all_revision_workflows_passed':True,'verified_revision_workflows':checks,'source_artifact_id':artifact['id'],'source_artifact_digest_verified':bool(declared),'individual_business_acceptance':'not_assessed','files':members})
     manifest={'schema':'ziokt.distribution-build.v1','source_repository':repository,'source_revision':run['head_sha'],'source_run':run['html_url'],'source_run_conclusion':run['conclusion'],'artifacts':records,'verified_revision_workflows':checks,'assurance':'Transfer and source digest verification are separate from build, signing, runtime and business acceptance.'}
     (area/'build-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
     (area/'SHA256SUMS').write_text(''.join(file_sha(p)+'  '+p.name+'\n' for p in sorted(area.iterdir()) if p.is_file()))
@@ -118,7 +118,16 @@ def publish_run(repository,run_id,directory):
 def publish(repository=None,run_id=None,limit=100):
     validate_repository(HUB)
     with tempfile.TemporaryDirectory(prefix='ziokt-release-') as temporary:
-        area=Path(temporary);catalog=prior_catalog(area);records={r['id']:r for r in catalog['artifacts'] if r.get('source_run_conclusion') not in {'failure','cancelled','timed_out','action_required'}}
+        area=Path(temporary);catalog=prior_catalog(area);records={};verified={}
+        # Legacy catalogs could include a passing artifact from a failing revision.
+        # Revalidate each distinct revision; immutable old releases stay historical.
+        for item in catalog['artifacts']:
+            key=(item.get('source_repository'),item.get('source_revision'))
+            if not all(isinstance(v,str) for v in key) or item.get('source_run_conclusion')!='success':continue
+            if key not in verified:
+                try:verified[key]=verified_commit(*key)
+                except ValueError:verified[key]=None
+            if verified[key]:records[item['id']]=dict(item,all_revision_workflows_passed=True,verified_revision_workflows=verified[key])
         sources=json.loads((ROOT/'sources.json').read_text())['sources']
         for source in sources:
             repo=source['repository']

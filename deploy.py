@@ -15,6 +15,8 @@ import platform
 import plistlib
 import re
 import shutil
+import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -78,7 +80,7 @@ def plan(catalog_value,selection,include=(),exclude=()):
     chosen=[]
     for item in catalog_value['artifacts']:
         if not any(fnmatch.fnmatchcase(item['id'],pattern) for pattern in selection):continue
-        if item.get('kind')=='github-actions-artifact-zip' and item.get('source_run_conclusion')!='success':raise ValueError('only successful CI artifacts may be installed')
+        if item.get('kind')=='github-actions-artifact-zip' and (item.get('source_run_conclusion')!='success' or item.get('all_revision_workflows_passed') is not True):raise ValueError('only successful CI artifacts may be installed')
         if not re.fullmatch('[a-f0-9]{64}',item['sha256']) or not 0<item['bytes']<=2*1024**3:raise ValueError('artifact integrity declaration invalid')
         files=[f for f in item.get('files',[]) if (not include or any(fnmatch.fnmatchcase(f['path'],p) for p in include)) and not any(fnmatch.fnmatchcase(f['path'],p) for p in exclude)]
         if files:chosen.append({**item,'selected_files':files})
@@ -181,7 +183,9 @@ def persist(root,service,argv,name=None):
 
 
 def preflight(root, repo=REPOSITORY, proxy=None):
-    root = Path(root).expanduser().resolve()
+    root = Path(root).expanduser().absolute()
+    if root.is_symlink():raise ValueError('installation root cannot be a symlink')
+    root=root.resolve()
     checks = []
     def record(name, passed, detail=''):
         checks.append({'name': name, 'passed': passed, 'detail': detail})
@@ -245,14 +249,17 @@ def detect_public_ip(proxy=None):
     return None
 
 
-def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False, service_prefix='ziokt'):
+def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False, service_prefix='ziokt', native_entrypoint=None, native_sha256=None, genesis=None, genesis_sha256=None, p2p_port=7234, gateway_port=8185, mcp_port=8186, openci_port=8768, dns_port=5353, doh_port=8188, seed_certificate=None, seed_certificate_sha256=None):
     """Universal, location-independent node bootstrap with automatic public IP detection.
     
     Seed peer and gateway peer have no hardcoded defaults and are strictly configured via
     command parameters when bootstrapping a node to join an existing network.
     """
-    root = Path(root).expanduser().resolve()
+    root = Path(root).expanduser().absolute()
+    if root.is_symlink():raise ValueError('installation root cannot be a symlink')
+    root=root.resolve()
     if not re.fullmatch('[A-Za-z0-9_-]{1,64}',network) or not re.fullmatch('[A-Za-z0-9_-]{1,64}',service_prefix):raise ValueError('safe network and service prefix required')
+    if (root/'corium/etc/corix/networks'/network/'corix.conf').exists():raise ValueError('existing native node configuration retained')
     if any((root/relative).exists() for relative in ('config/gateway.json','config/mcp.json','config/corix.conf','config/consensus-safety-hold.json')):raise ValueError('existing node configuration retained; bootstrap requires a fresh config directory')
     if enable_services and not (root/'active.json').is_file():raise ValueError('install a reviewed successful CI bundle before enabling services')
     if seed_peer is not None:
@@ -263,6 +270,30 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
     if gateway_peer is not None:
         endpoint=urlsplit(gateway_peer)
         if endpoint.scheme not in {'http','https'} or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.path not in {'','/'} or endpoint.query or endpoint.fragment or any(c.isspace() for c in gateway_peer):raise ValueError('exact HTTP/HTTPS gateway origin required')
+    for port in (p2p_port,gateway_port,mcp_port,openci_port,dns_port,doh_port):
+        if type(port) is not int or not 1024<=port<=65000:raise ValueError('unprivileged bounded service ports required')
+    if len({p2p_port,p2p_port+1,p2p_port+2,gateway_port,mcp_port,openci_port,dns_port,doh_port})!=8:raise ValueError('native and application listener ports must be distinct')
+    native=None
+    if native_entrypoint is not None:
+        native=Path(native_entrypoint).expanduser().absolute()
+        if native.is_symlink() or not native.is_file() or not re.fullmatch('[a-f0-9]{64}',str(native_sha256)) or sha(native)!=native_sha256:raise ValueError('explicit checksum-pinned native entrypoint required')
+        subprocess.run(['bash','-n',str(native)],check=True,capture_output=True)
+    elif enable_services:
+        native=executable(root,'corix-ziokt.sh');native_sha256=sha(native)
+    if genesis is not None:
+        genesis=Path(genesis).expanduser().absolute()
+        if genesis.is_symlink() or not genesis.is_file() or genesis.stat().st_size>1048576 or not re.fullmatch('[a-f0-9]{64}',str(genesis_sha256)) or sha(genesis)!=genesis_sha256:raise ValueError('explicit checksum-pinned public genesis required')
+        json.loads(genesis.read_text())
+    if native and seed_peer and genesis is None:raise ValueError('joining a seed requires the network public genesis and its independently pinned SHA256')
+    if seed_certificate is not None:
+        import ssl
+        seed_certificate=Path(seed_certificate).expanduser().absolute()
+        if not seed_peer or seed_certificate.is_symlink() or not seed_certificate.is_file() or seed_certificate.stat().st_size>16384 or sha(seed_certificate)!=seed_certificate_sha256:raise ValueError('explicit matching seed certificate SHA256 required')
+        text=seed_certificate.read_text()
+        if 'PRIVATE KEY' in text:raise ValueError('public peer certificate required')
+        ssl.PEM_cert_to_DER_cert(text)
+    if enable_services and seed_peer and not seed_certificate:raise ValueError('joining a seed requires its explicitly pinned public TLS certificate')
+
     pf = preflight(root, proxy=proxy)
     if not pf['overall_pass']:
         raise ValueError('Preflight check failed: ' + json.dumps([c for c in pf['checks'] if not c['passed']], ensure_ascii=False))
@@ -279,6 +310,8 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
         d.chmod(0o700)
 
     token_file = config_dir / 'admin_token.key'
+    if token_file.is_symlink():raise ValueError('token symlink rejected')
+    if token_file.exists() and (not token_file.is_file() or token_file.stat().st_mode&0o077):raise ValueError('private owner token required')
     if not token_file.exists():
         import secrets
         token_file.write_text(secrets.token_hex(32) + '\n')
@@ -294,7 +327,9 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
     write(hold_file, hold_doc)
 
     seed_line = f"seed_peers = {seed_peer}\n" if seed_peer else "seed_peers = \n"
-    corix_conf = config_dir / 'corix.conf'
+    corix_conf = corium_dir / 'etc/corix/networks' / network / 'corix.conf'
+    if corix_conf.exists() or corix_conf.is_symlink():raise ValueError('existing native configuration retained')
+    corix_conf.parent.mkdir(parents=True,mode=0o700)
     corix_content = f"""[main]
 dep_mode = manual
 build_jobs = 1
@@ -307,7 +342,7 @@ download_protocol_priority = p2p,http,git
 proxy = 
 
 [p2p]
-port = 7234
+port = {p2p_port}
 stun_servers = stun.l.google.com:19302,stun.nextcloud.com:443
 enable_upnp = false
 auto_trust_new_nodes = false
@@ -331,13 +366,38 @@ enabled = true
 enabled = TRUE
 federation_id = {network}
 provider_id = corium-node
-allow_mutations = TRUE
-allowed_operations = artifact.stage,chain.mine,compute.run,compute.submit,content.publish,identity.register,naming.submit,privacy.submit,recovery.checkpoint,recovery.restore,snapshot.create,strata.create,wiki.create,zkc.issue,zkn.gift,zkn.transfer
+allow_mutations = FALSE
+allowed_operations =
 allowed_resources = *
 """
     corix_conf.write_text(corix_content)
     corix_conf.chmod(0o600)
 
+    native_receipt=None
+    if native:
+        if sys.platform!='linux':raise ValueError('native node initialization currently requires GNU/Linux')
+        target=corium_dir/'bin/corix_v108.sh';target.parent.mkdir(mode=0o700)
+        shutil.copyfile(native,target);target.chmod(0o500)
+        if genesis is not None:
+            shutil.copyfile(genesis,corix_conf.parent/'genesis.json');(corix_conf.parent/'genesis.json').chmod(0o600)
+        env=dict(os.environ,CORIUM_ROOT=str(corium_dir),CORIUM_NETWORK_ID_OVERRIDE=network,PYTHON_CMD=python_executable(root),PATH=str(Path(python_executable(root)).parent)+os.pathsep+os.environ.get('PATH',os.defpath))
+        # Native state creation generates this node's own keys; never copy validator secrets.
+        log=config_dir/'native-initialization.log'
+        with log.open('xb') as output:
+            log.chmod(0o600)
+            result=subprocess.run(['bash',str(target),'init','--state-only'],env=env,stdout=output,stderr=subprocess.STDOUT,timeout=180)
+        if result.returncode:raise RuntimeError('native initialization failed; inspect owner-only '+str(log))
+        chain=corium_dir/'var/lib/corix/networks'/network/'blockchain/chain.db'
+        with sqlite3.connect(chain.resolve().as_uri()+'?mode=ro',uri=True) as db:
+            row=db.execute('SELECT height,hash FROM blocks ORDER BY height DESC LIMIT 1').fetchone()
+        if not row or row[0]!=0:raise ValueError('fresh native genesis initialization required')
+        public=corix_conf.parent/'identity.key.pub'
+        native_receipt={'state':'initialized','genesis_hash':row[1],'height':row[0],'identity':hashlib.sha256(public.read_text().rstrip('\n').encode()).hexdigest(),'entrypoint_sha256':native_sha256,'history_verified':False,'consensus_enabled':False}
+        if seed_certificate:
+            peer=urlsplit('//'+seed_peer);cache=corium_dir/'var/lib/corix/p2p/peer_certs';cache.mkdir(parents=True,mode=0o700,exist_ok=True)
+            peer_file=cache/(peer.hostname+'_'+str(peer.port)+'.pem');shutil.copyfile(seed_certificate,peer_file);peer_file.chmod(0o600)
+        wrapper=root/'native-service.sh'
+        wrapper.write_text('#!/usr/bin/env bash\numask 077\nexport CORIUM_ROOT='+shlex.quote(str(corium_dir))+'\nexport CORIUM_NETWORK_ID_OVERRIDE='+shlex.quote(network)+'\nexport PATH='+shlex.quote(str(Path(python_executable(root)).parent)+os.pathsep+os.defpath)+'\nexport PYTHON_CMD='+shlex.quote(python_executable(root))+'\nsource '+shlex.quote(str(target))+'\nload_config || exit 1\ncase "$1" in\np2p) dht_bootstrap; wait ;;\n*) exit 2 ;;\nesac\n');wrapper.chmod(0o500)
     gateway_file = config_dir / 'gateway.json'
     gateway_doc = {
         'schema': 'ziokt.gateway.v1',
@@ -345,20 +405,25 @@ allowed_resources = *
         'network': network,
         'state_root': str(corium_dir),
         'corix': str(corium_dir / 'bin/corix_v108.sh'),
+        **({'corix_digest':'sha256:'+native_sha256} if native else {}),
         'objects': str(corium_dir / 'var/lib/corix/p2p/objects'),
         'dht_db': str(corium_dir / 'var/lib/corix/p2p/dht.db'),
         'forum_db': str(corium_dir / f'var/lib/corix/networks/{network}/forum/forum.db'),
         'admin_token': str(token_file),
-        'port': 8185,
+        'port': gateway_port,
         'peers': [gateway_peer] if gateway_peer else [],
         'registry_db': str(config_dir / 'registry.db'),
         'mcp_config': str(config_dir / 'mcp.json'),
         'gui_origins': [
-            'http://127.0.0.1:8185',
-            'http://localhost:8185'
+            'http://127.0.0.1:'+str(gateway_port),
+            'http://localhost:'+str(gateway_port)
         ],
         'consensus_safety_hold': str(hold_file)
     }
+    if native:
+        dns_file=config_dir/'dns.json'
+        write(dns_file,{'schema':'ziokt.dns.v2','listen':'127.0.0.1','port':dns_port,'doh_port':doh_port,'default_realm':'node','realms':{'node':{'network_id':network,'sources':{'corium':{'forum_db':gateway_doc['forum_db'],'chain_db':str(corium_dir/'var/lib/corix/networks'/network/'blockchain/chain.db'),'objects':gateway_doc['objects']}}}}})
+        gateway_doc['dns_config']=str(dns_file)
     write(gateway_file, gateway_doc)
 
     mcp_file = config_dir / 'mcp.json'
@@ -371,13 +436,13 @@ allowed_resources = *
     ]
     mcp_doc = {
         'schema': 'ziokt.mcp.v1',
-        'issuer': 'http://127.0.0.1:8186',
-        'port': 8186,
+        'issuer': 'http://127.0.0.1:'+str(mcp_port),
+        'port': mcp_port,
         'state': str(mcp_state),
         'admin_token': str(token_file),
         'gateway': str(gateway_file),
-        'hosts': ['127.0.0.1:8186', 'localhost:8186'],
-        'origins': ['http://127.0.0.1:8185', 'http://localhost:8185'],
+        'hosts': ['127.0.0.1:'+str(mcp_port), 'localhost:'+str(mcp_port)],
+        'origins': ['http://127.0.0.1:'+str(gateway_port), 'http://localhost:'+str(gateway_port)],
         'writes_enabled': False,
         'bridges': {},
         'cimd_enabled': True,
@@ -390,18 +455,41 @@ allowed_resources = *
         },
         'consensus_safety_hold': str(hold_file)
     }
+    if native:
+        federation=config_dir/'federation.json'
+        write(federation,{'schema':'ziokt.federation.v1','enabled':True,'federation_id':network,'providers':[{'native_project':'corium','provider_id':'corium-node','root':str(corium_dir/'bin'),'native_config':str(corix_conf),'entrypoint_digest':'sha256:'+native_sha256,'network_id':network,'state_root':str(corium_dir)}]})
+        mcp_doc['federation']=str(federation)
+        mcp_doc['dns_config']=str(dns_file)
+    mcp_doc['cimd_scopes']=[scope for scope in scopes if scope.endswith(':read')]
     write(mcp_file, mcp_doc)
 
     services_enabled = []
     if enable_services and (root / 'active.json').exists():
+        if not native_receipt:raise ValueError('initialized native state required before enabling node services')
+        persist(root,'corium-p2p',['bash',str(root/'native-service.sh'),'p2p'],service_prefix+'-corium-p2p')
+        services_enabled.append('corium-p2p')
+        openci_binary=executable(root,'openci.pyz')
+        subprocess.run([python_executable(root),str(openci_binary),'--root',str(openci_dir),'init'],check=True,capture_output=True,timeout=30)
         for svc in ('gateway', 'mcp', 'openci'):
             try:
                 cfg = gateway_file if svc == 'gateway' else mcp_file if svc == 'mcp' else None
-                argv = command(root, svc, cfg)
+                argv = command(root, svc, cfg,port=openci_port)
                 persist(root, svc, argv,service_prefix+'-'+svc)
                 services_enabled.append(svc)
             except Exception as error:
                 raise RuntimeError('service activation failed: '+svc+'; configuration preserved for review') from error
+
+        import time
+        for port,path in [(gateway_port,'/api/gateway/status'),(mcp_port,'/.well-known/oauth-authorization-server'),(openci_port,'/v1/status')]:
+            deadline=time.monotonic()+30
+            while True:
+                try:
+                    with urllib.request.urlopen('http://127.0.0.1:'+str(port)+path,timeout=2) as response:
+                        if response.status!=200:raise ValueError('service health status differs')
+                    break
+                except (OSError,ValueError):
+                    if time.monotonic()>deadline:raise RuntimeError('node service health check failed on port '+str(port))
+                    time.sleep(.25)
 
     return {
         'schema': 'ziokt.bootstrap-summary.v1',
@@ -417,6 +505,7 @@ allowed_resources = *
         'consensus_hold': str(hold_file),
         'services_enabled': services_enabled,
         'native_consensus_ready':False,
+        'native':native_receipt,
         'service_prefix':service_prefix
     }
 
@@ -438,10 +527,10 @@ def main():
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
     q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
-    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Public IP of this node (auto-detected if omitted)');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt')
+    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Public IP of this node (auto-detected if omitted)');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt');q.add_argument('--native-entrypoint',type=Path);q.add_argument('--native-sha256');q.add_argument('--genesis',type=Path);q.add_argument('--genesis-sha256');q.add_argument('--p2p-port',type=int,default=7234);q.add_argument('--gateway-port',type=int,default=8185);q.add_argument('--mcp-port',type=int,default=8186);q.add_argument('--openci-port',type=int,default=8768);q.add_argument('--dns-port',type=int,default=5353);q.add_argument('--doh-port',type=int,default=8188);q.add_argument('--seed-certificate',type=Path);q.add_argument('--seed-certificate-sha256')
     sub.add_parser('status');sub.add_parser('rollback');a=p.parse_args();root=a.root.expanduser().absolute()
     if a.action == 'bootstrap':
-        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix)
+        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix,a.native_entrypoint,a.native_sha256,a.genesis,a.genesis_sha256,a.p2p_port,a.gateway_port,a.mcp_port,a.openci_port,a.dns_port,a.doh_port,a.seed_certificate,a.seed_certificate_sha256)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return
     if a.action == 'preflight':

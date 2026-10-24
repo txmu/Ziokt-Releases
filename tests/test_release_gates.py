@@ -35,3 +35,16 @@ class GateTests(unittest.TestCase):
     def test_failed_ci_installation_is_not_a_valid_selection(self):
         item={'id':'test/artifact','kind':'github-actions-artifact-zip','source_run_conclusion':'failure'}
         with self.assertRaises(ValueError):deploy.plan({'artifacts':[item]},['test/*'])
+
+class IndependentNodeInputTests(unittest.TestCase):
+    def test_root_links_port_collisions_and_unpinned_native_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);target=base/'target';target.mkdir();link=base/'link';link.symlink_to(target,target_is_directory=True)
+            with self.assertRaises(ValueError):deploy.bootstrap(link,public_ip='192.0.2.1')
+            source=base/'native.sh';source.write_text('#!/bin/bash\nexit 0\n')
+            with self.assertRaises(ValueError):deploy.bootstrap(base/'node',public_ip='192.0.2.1',native_entrypoint=source,native_sha256='0'*64)
+            with self.assertRaises(ValueError):deploy.bootstrap(base/'node',public_ip='192.0.2.1',gateway_port=7234)
+            self.assertFalse((base/'node/config').exists())
+    def test_installer_requires_revision_wide_gate_not_one_passing_artifact(self):
+        item={'id':'test/artifact','kind':'github-actions-artifact-zip','source_run_conclusion':'success'}
+        with self.assertRaises(ValueError):deploy.plan({'artifacts':[item]},['test/*'])

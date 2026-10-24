@@ -63,3 +63,22 @@ The collector examines trusted owner push/manual/scheduled/release events and ne
 `bootstrap` 保留新节点的共识安全锁，并默认关闭 MCP 写入。配置文件生成不代表原生初始化、可信链同步或共识已经就绪。启用服务前须先安装经全部 CI 检查通过的原生交付包并完成原生节点初始化与链身份核验；`--enable-services` 在未安装交付包时会明确失败。服务名前缀可由 `--service-prefix` 指定，既有配置和密钥不会被覆盖。不会内置本机验证者、生产历史授权签名或 H64 检查点。
 
 Release 自动收集器只发布成功的 owner CI，并检查相同源码 revision 的全部工作流通过；已知失败产物不进入下载目录或安装计划。
+
+### 独立原生节点与 CI 部署验收
+
+安装全部通过 CI 的 `--profile gateway` bundle 后，`bootstrap --enable-services` 从该 bundle 的 `corix-ziokt.sh` 初始化真实 Corium 状态、该节点自己的密钥、Gateway、节点 ZDNS、MCP 和 OpenCI。原生配置位于实际 `corium/etc/corix/networks/<network>/corix.conf`，不再写入原生运行时不会读取的位置。所有路径由 --root 派生；--service-prefix、P2P/Gateway/MCP/OpenCI/DNS/DoH 端口可显式配置，不复用生产机器的身份或服务权限。没有配置种子时不连接隐式种子。
+
+接入已有网络须显式提供其公开创世文件和 SHA256；启用种子连接还须提供种子公开 TLS 证书和 SHA256。它们都不是验证者私钥，不能用复制远端身份的方式部署新节点：
+
+```sh
+python3 deploy.py --root "$NODE_ROOT" bootstrap \
+  --network "$NETWORK" --public-ip "$THIS_NODE_IP" \
+  --seed-peer "$SEED_HOST:$SEED_PORT" --gateway-peer "$SEED_GATEWAY_ORIGIN" \
+  --genesis "$PUBLIC_GENESIS" --genesis-sha256 "$GENESIS_SHA256" \
+  --seed-certificate "$PUBLIC_SEED_CERT" --seed-certificate-sha256 "$SEED_CERT_SHA256" \
+  --service-prefix "$SERVICE_PREFIX" --enable-services
+```
+
+原生运行依赖须通过节点预检并由节点维护者安装；脚本不悄悄修改系统包、关闭 TLS 校验或代替节点批准链历史。初始化仅创建并验证实际创世状态，`BOOTSTRAP_HISTORY_NOT_VERIFIED` 保留共识暂停和写操作关闭，直到真实链同步、恢复声明与对应区块证明通过独立验收。种子只负责发现，不获得特权。
+
+`Independent release deployment with own Gateway and ZDNS` 是手动 CI 验收流程：给出已经全部通过并发布的精确源码 revision 与 catalog SHA256，在空白 CI 主机上实际执行 deploy.py 的下载校验、安装、两个独立根目录初始化和 systemd 启动，以公开创世和明确证书 pin 建立真实原生 PING/PONG，检查两个身份不同且各自 Gateway/ZDNS/MCP/OpenCI 可用。证据不包含私钥或 token；同一 CI 主机不冒充两个物理故障域，也不宣称已经接受生产链的完整历史。

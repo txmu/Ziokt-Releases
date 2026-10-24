@@ -1,0 +1,47 @@
+name: Independent release deployment with own Gateway and ZDNS
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Exact fully green Ziokt revision already published in catalog
+        required: true
+        type: string
+      catalog_sha256:
+        description: Independently verified catalog SHA256
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  independent-nodes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check release selectors before touching the disposable host
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          CATALOG_SHA256: ${{ inputs.catalog_sha256 }}
+        run: |
+          [[ "$SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$CATALOG_SHA256" =~ ^[a-f0-9]{64}$ ]]
+      - name: Provision native runtime dependencies on CI only
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3 bc xxd jq rsync iproute2 procps lsof unzip curl git tar patch make gcc openssl gpg ripgrep socat python3-venv libminiupnpc-dev gawk
+          python3 -m venv "$RUNNER_TEMP/node-runtime"
+          "$RUNNER_TEMP/node-runtime/bin/pip" install cryptography pystun3 miniupnpc RestrictedPython sqlparse psutil
+      - name: Actual deploy.py install, bootstrap and independent native peers
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          CATALOG_SHA256: ${{ inputs.catalog_sha256 }}
+        run: |
+          sudo env GITHUB_ACTIONS=true PATH="$RUNNER_TEMP/node-runtime/bin:$PATH" "$RUNNER_TEMP/node-runtime/bin/python" ci/independent_node.py --catalog-sha256 "$CATALOG_SHA256" --source-revision "$SOURCE_REVISION" --output "$RUNNER_TEMP/independent-node-acceptance"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: ziokt-independent-node-acceptance
+          path: ${{ runner.temp }}/independent-node-acceptance/acceptance.json
+          if-no-files-found: error
