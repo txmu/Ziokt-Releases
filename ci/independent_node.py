@@ -16,21 +16,21 @@ def main():
     nodes=[];units=[]
     try:
         catalog=deploy.catalog(deploy.REPOSITORY,output,expected=args.catalog_sha256)
-        approved=deploy.plan(catalog,['txmu/Ziokt/ziokt-enabled-native-artifacts'],include=['*.pyz','corix-ziokt.sh'])
+        approved=deploy.plan(catalog,['txmu/Ziokt/ziokt-enabled-native-artifacts','txmu/Ziokt/openci-light-compiler-'+args.source_revision],include=['*.pyz','corix-ziokt.sh','*.wasm','*.js','manifest.json'])
         if any(a['source_revision']!=args.source_revision or a.get('all_revision_workflows_passed') is not True for a in approved['artifacts']):raise RuntimeError('only the exact completed green revision may enter independent deployment acceptance')
         for index in range(2):
             root=output/('seed' if index==0 else 'client');deploy.install(root,approved)
-            prefix='ziokt-ci-'+('seed' if index==0 else 'client');units.extend(prefix+'-'+name for name in ('gateway','mcp','openci','corium-p2p'))
+            prefix='ziokt-ci-'+('seed' if index==0 else 'client');units.extend(prefix+'-'+name for name in ('gateway','mcp','openci','effort','corium-p2p'))
             options={}
             if index:
                 seed=nodes[0];genesis=Path(seed['corix_config']).parent/'genesis.json';certificate=Path(seed['corix_config']).parent/'tls.crt'
-                options={'seed_peer':'127.0.0.1:17234','gateway_peer':'http://127.0.0.1:18185','genesis':genesis,'genesis_sha256':deploy.sha(genesis),'seed_certificate':certificate,'seed_certificate_sha256':deploy.sha(certificate)}
-            node=deploy.bootstrap(root,network='ci-independent',public_ip=None if index else '127.0.0.1',connectivity='outbound' if index else 'auto',enable_services=True,service_prefix=prefix,p2p_port=17234+index*1000,gateway_port=18185+index*1000,mcp_port=18186+index*1000,openci_port=18768+index*1000,dns_port=15353+index*1000,doh_port=18188+index*1000,**options)
+                options={'seed_peer':'127.0.0.1:11234','gateway_peer':'http://127.0.0.1:18185','genesis':genesis,'genesis_sha256':deploy.sha(genesis),'seed_certificate':certificate,'seed_certificate_sha256':deploy.sha(certificate)}
+            node=deploy.bootstrap(root,network='ci-independent',public_ip=None if index else '127.0.0.1',connectivity='outbound' if index else 'auto',enable_services=True,service_prefix=prefix,p2p_port=11234+index*3000,gateway_port=18185+index*1000,mcp_port=18186+index*1000,openci_port=18768+index*1000,dns_port=15353+index*1000,doh_port=18188+index*1000,effort_port=18081+index*1000,**options)
             nodes.append(node)
         if nodes[0]['native']['identity']==nodes[1]['native']['identity']:raise RuntimeError('independent identity separation failed')
         if nodes[0]['native']['genesis_hash']!=nodes[1]['native']['genesis_hash']:raise RuntimeError('shared public genesis differs')
         # Explicit bilateral public certificate pins, never global TLS bypass.
-        for source,target,port in [(nodes[0],nodes[1],18234),(nodes[1],nodes[0],17234)]:
+        for source,target,port in [(nodes[0],nodes[1],14234),(nodes[1],nodes[0],11234)]:
             root=Path(source['root'])/'corium';cache=root/'var/lib/corix/p2p/peer_certs';certificate=Path(target['corix_config']).parent/'tls.crt';pin=cache/('127.0.0.1_'+str(port)+'.pem');pin.write_bytes(certificate.read_bytes());pin.chmod(0o600)
             command='source "$1"\nload_config || exit 1\ndht_add_node "$2" ipv4 127.0.0.1 "$3"\ndht_send_message "$2" PING independent-deploy'
             result=subprocess.run(['bash','-c',command,'peer-check',str(root/'bin/corix_v108.sh'),target['native']['identity'],str(port)],env=dict(os.environ,CORIUM_ROOT=str(root),CORIUM_NETWORK_ID_OVERRIDE='ci-independent'),text=True,capture_output=True,timeout=45)

@@ -252,7 +252,7 @@ def detect_public_ip(proxy=None):
     return None
 
 
-def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False, service_prefix='ziokt', native_entrypoint=None, native_sha256=None, genesis=None, genesis_sha256=None, p2p_port=7234, gateway_port=8185, mcp_port=8186, openci_port=8768, dns_port=5353, doh_port=8188, seed_certificate=None, seed_certificate_sha256=None, connectivity='auto'):
+def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False, service_prefix='ziokt', native_entrypoint=None, native_sha256=None, genesis=None, genesis_sha256=None, p2p_port=7234, gateway_port=8185, mcp_port=8186, openci_port=8768, dns_port=5353, doh_port=8188, seed_certificate=None, seed_certificate_sha256=None, connectivity='auto', effort_port=8081):
     """Universal, location-independent node bootstrap with automatic public IP detection.
     
     Seed peer and gateway peer have no hardcoded defaults and are strictly configured via
@@ -273,9 +273,11 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
     if gateway_peer is not None:
         endpoint=urlsplit(gateway_peer)
         if endpoint.scheme not in {'http','https'} or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.path not in {'','/'} or endpoint.query or endpoint.fragment or any(c.isspace() for c in gateway_peer):raise ValueError('exact HTTP/HTTPS gateway origin required')
-    for port in (p2p_port,gateway_port,mcp_port,openci_port,dns_port,doh_port):
+    for port in (p2p_port,gateway_port,mcp_port,openci_port,dns_port,doh_port,effort_port):
         if type(port) is not int or not 1024<=port<=65000:raise ValueError('unprivileged bounded service ports required')
-    if len({p2p_port,p2p_port+1,p2p_port+2,gateway_port,mcp_port,openci_port,dns_port,doh_port})!=8:raise ValueError('native and application listener ports must be distinct')
+    if p2p_port>63000:raise ValueError('native TCP offsets require P2P port at most 63000')
+    if len({p2p_port,p2p_port+1000,p2p_port+2000,gateway_port,mcp_port,openci_port,dns_port,doh_port,effort_port})!=9:raise ValueError('native and application listener ports must be distinct')
+    if (native_entrypoint is not None or enable_services) and sys.platform!='linux':raise ValueError('full native nodes require GNU/Linux; use WSL2 or a Linux VM on this host')
     native=None
     if native_entrypoint is not None:
         native=Path(native_entrypoint).expanduser().absolute()
@@ -404,7 +406,7 @@ allowed_resources = *
         native_receipt={'state':'initialized','genesis_hash':row[1],'height':row[0],'identity':hashlib.sha256(public.read_text().rstrip('\n').encode()).hexdigest(),'entrypoint_sha256':native_sha256,'history_verified':False,'consensus_enabled':False}
         if seed_certificate:
             peer=urlsplit('//'+seed_peer);cache=corium_dir/'var/lib/corix/p2p/peer_certs';cache.mkdir(parents=True,mode=0o700,exist_ok=True)
-            peer_file=cache/(peer.hostname+'_'+str(peer.port)+'.pem');shutil.copyfile(seed_certificate,peer_file);peer_file.chmod(0o600)
+            peer_file=cache/(peer.hostname.replace(':','_')+'_'+str(peer.port)+'.pem');shutil.copyfile(seed_certificate,peer_file);peer_file.chmod(0o600)
         wrapper=root/'native-service.sh'
         wrapper.write_text('#!/usr/bin/env bash\numask 077\nexport CORIUM_ROOT='+shlex.quote(str(corium_dir))+'\nexport CORIUM_NETWORK_ID_OVERRIDE='+shlex.quote(network)+'\nexport PATH='+shlex.quote(str(Path(python_executable(root)).parent)+os.pathsep+os.defpath)+'\nexport PYTHON_CMD='+shlex.quote(python_executable(root))+'\nsource '+shlex.quote(str(target))+'\nload_config || exit 1\ncase "$1" in\np2p) dht_bootstrap; wait ;;\n*) exit 2 ;;\nesac\n');wrapper.chmod(0o500)
     gateway_file = config_dir / 'gateway.json'
@@ -472,6 +474,9 @@ allowed_resources = *
     mcp_doc['cimd_scopes']=[scope for scope in scopes if scope.endswith(':read')]
     write(mcp_file, mcp_doc)
 
+    effort_file=config_dir/'effort.json'
+    if native_receipt:
+        write(effort_file,{'schema':'ziokt.effort-web.v1','origin':'http://127.0.0.1:'+str(effort_port),'listen':'127.0.0.1','port':effort_port,'federation_config':str(federation),'provider':'corium-node','network_id':network,'submitter':native_receipt['identity'],'state_root':str(root/'state/effort'),'explorer':True,'openci_endpoint':'http://127.0.0.1:'+str(openci_port)})
     services_enabled = []
     if enable_services and (root / 'active.json').exists():
         if not native_receipt:raise ValueError('initialized native state required before enabling node services')
@@ -479,9 +484,15 @@ allowed_resources = *
         services_enabled.append('corium-p2p')
         openci_binary=executable(root,'openci.pyz')
         subprocess.run([python_executable(root),str(openci_binary),'--root',str(openci_dir),'init'],check=True,capture_output=True,timeout=30)
-        for svc in ('gateway', 'mcp', 'openci'):
+        controller_config=openci_dir/'controller.json';doc=json.loads(controller_config.read_text());doc.update(public_origin='http://127.0.0.1:'+str(openci_port),public_origins=['http://127.0.0.1:'+str(effort_port)]);write(controller_config,doc)
+        compiler_files=list(active(root).rglob(('aarch64' if platform.machine().lower() in {'aarch64','arm64'} else 'x86_64')+'.wasm'))
+        if len(compiler_files)==1:
+            compiler=compiler_files[0].parent;manifest=compiler/'manifest.json'
+            if manifest.is_file():
+                controller_config=openci_dir/'controller.json';doc=json.loads(controller_config.read_text());doc.update(public_origin='http://127.0.0.1:'+str(openci_port),light_compile={'compiler_root':str(compiler),'manifest_sha256':sha(manifest),'cross_compile':False});write(controller_config,doc)
+        for svc in ('gateway', 'mcp', 'openci','effort'):
             try:
-                cfg = gateway_file if svc == 'gateway' else mcp_file if svc == 'mcp' else None
+                cfg = gateway_file if svc == 'gateway' else mcp_file if svc == 'mcp' else effort_file if svc=='effort' else None
                 argv = command(root, svc, cfg,port=openci_port)
                 persist(root, svc, argv,service_prefix+'-'+svc)
                 services_enabled.append(svc)
@@ -489,7 +500,7 @@ allowed_resources = *
                 raise RuntimeError('service activation failed: '+svc+'; configuration preserved for review') from error
 
         import time
-        for port,path in [(gateway_port,'/api/gateway/status'),(mcp_port,'/.well-known/oauth-authorization-server'),(openci_port,'/v1/status')]:
+        for port,path in [(gateway_port,'/api/gateway/status'),(mcp_port,'/.well-known/oauth-authorization-server'),(openci_port,'/v1/status'),(effort_port,'/api/people/config')]:
             deadline=time.monotonic()+30
             while True:
                 try:
@@ -537,10 +548,10 @@ def main():
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
     q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
-    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Public IP of this node (auto-detected if omitted)');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt');q.add_argument('--native-entrypoint',type=Path);q.add_argument('--native-sha256');q.add_argument('--genesis',type=Path);q.add_argument('--genesis-sha256');q.add_argument('--p2p-port',type=int,default=7234);q.add_argument('--gateway-port',type=int,default=8185);q.add_argument('--mcp-port',type=int,default=8186);q.add_argument('--openci-port',type=int,default=8768);q.add_argument('--dns-port',type=int,default=5353);q.add_argument('--doh-port',type=int,default=8188);q.add_argument('--seed-certificate',type=Path);q.add_argument('--seed-certificate-sha256');q.add_argument('--connectivity',choices=['auto','public','outbound'],default='auto')
+    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Advertised node IP; omit for outbound-only auto mode, or use --connectivity public to detect');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt');q.add_argument('--native-entrypoint',type=Path);q.add_argument('--native-sha256');q.add_argument('--genesis',type=Path);q.add_argument('--genesis-sha256');q.add_argument('--p2p-port',type=int,default=7234);q.add_argument('--gateway-port',type=int,default=8185);q.add_argument('--mcp-port',type=int,default=8186);q.add_argument('--openci-port',type=int,default=8768);q.add_argument('--dns-port',type=int,default=5353);q.add_argument('--doh-port',type=int,default=8188);q.add_argument('--seed-certificate',type=Path);q.add_argument('--seed-certificate-sha256');q.add_argument('--connectivity',choices=['auto','public','outbound'],default='auto');q.add_argument('--effort-port',type=int,default=8081)
     sub.add_parser('status');sub.add_parser('rollback');a=p.parse_args();root=a.root.expanduser().absolute()
     if a.action == 'bootstrap':
-        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix,a.native_entrypoint,a.native_sha256,a.genesis,a.genesis_sha256,a.p2p_port,a.gateway_port,a.mcp_port,a.openci_port,a.dns_port,a.doh_port,a.seed_certificate,a.seed_certificate_sha256,a.connectivity)
+        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix,a.native_entrypoint,a.native_sha256,a.genesis,a.genesis_sha256,a.p2p_port,a.gateway_port,a.mcp_port,a.openci_port,a.dns_port,a.doh_port,a.seed_certificate,a.seed_certificate_sha256,a.connectivity,a.effort_port)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return
     if a.action == 'preflight':
@@ -556,7 +567,14 @@ def main():
         with tempfile.TemporaryDirectory(prefix='ziokt-plan-') as temporary:
             selection=a.artifact or (['txmu/Ziokt/ziokt-enabled-native-artifacts'] if a.profile in {'gateway','openci'} else ['txmu/Ziokt/ziokt-'+('windows-latest' if os.name=='nt' else 'macos-latest' if sys.platform=='darwin' else 'ubuntu-24.04')] if a.profile=='portable' else [])
             if not selection:p.error('choose --profile or explicit --artifact selectors')
-            approved=plan(catalog(a.repository,Path(temporary),a.proxy,a.catalog_sha256),selection,a.include,a.exclude)
+            inventory=catalog(a.repository,Path(temporary),a.proxy,a.catalog_sha256)
+            if not a.artifact and a.profile in {'gateway','openci'}:
+                native=next((item for item in inventory['artifacts'] if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts'),None)
+                if native is None:raise ValueError('green native bundle unavailable')
+                compiler='txmu/Ziokt/openci-light-compiler-'+native['source_revision']
+                if not any(item['id']==compiler for item in inventory['artifacts']):raise ValueError('matching green lightweight compiler bundle unavailable')
+                selection.append(compiler)
+            approved=plan(inventory,selection,a.include,a.exclude)
         if a.action=='plan':print(json.dumps(approved,ensure_ascii=False,indent=2));return
         if not a.yes and a.confirm!=approved['sha256']:raise ValueError('inspect the plan and supply --confirm SHA256, or explicitly use --yes')
         result=install(root,approved,a.proxy)

@@ -88,3 +88,5 @@ python3 deploy.py --root "$NODE_ROOT" bootstrap \
 `bootstrap --connectivity outbound` 适用于没有公网 IP 的家庭节点：不调用公网 IP 探测服务、不把 NAT 出口误当本机可入站地址、不预填公共 STUN 服务、不自动启用 UPnP。自己的 Gateway/ZDNS/MCP/OpenCI 在本机提供相同能力，种子连接仍通过显式端点和证书 pin 发起。需要从外网访问家庭节点时，应由节点维护者选择端口映射、已配置的匿名载体或反向中继；脚本不会制造一个不存在的公网入口。公网 VPS 可显式设置 --public-ip，或使用 --connectivity public 请求出口探测；是否真的可入站仍须外部节点实测，配置成功不等于探测成功。
 
 协调器、应用和 OpenCI 服务采用 Python 便携包，安装管理器支持 Linux/systemd、macOS/launchd 和 Windows/任务计划；Windows 与 Android 奋斗端有各自 CI。完整 Corium 原生脚本依赖 GNU/Linux 与其运行依赖，因此 Windows 完整原生节点应在 WSL2/Linux VM 中运行，macOS 使用 Linux VM；管理器会明确拒绝把未验证的原生运行方式冒充该操作系统的完整节点。轻量编译当前严格支持 x86_64/aarch64，设备必须匹配所连节点，其他架构不能伪装领取。更多架构只有在实际构建和运行验收后才进入可用矩阵。
+
+gateway/openci 安装 profile 同时选择与原生协调器精确 revision 匹配、且全部通过 CI 的轻量 WASM 编译器 bundle，避免混装工具链。bootstrap 为每个节点配置自己的奋斗服务与本机 OpenCI 路径挂载；Windows/Android 和网页从所选节点读取 network_id 并绑定任务，不再把某个固定网络 ID 当作节点特权。公开下载地址可在奋斗配置的 downloads.android/windows 中显式指定；默认仅链接源码发布目录，不借用另一台生产机器的运行时接口。
