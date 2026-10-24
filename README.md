@@ -18,7 +18,13 @@ All installers and client packages are hosted on the `txmu/Ziokt-Releases` GitHu
 
 #### Linux / macOS:
 ```bash
+# 预检环境
 curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- preflight
+
+# 通用全节点一键部署（自动探测公网IP、配置生成、接入主网并启用服务）
+curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- bootstrap --enable-services
+
+# 或便携版客户端安装
 curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- install --profile portable --yes
 ```
 
