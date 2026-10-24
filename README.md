@@ -82,3 +82,9 @@ python3 deploy.py --root "$NODE_ROOT" bootstrap \
 原生运行依赖须通过节点预检并由节点维护者安装；脚本不悄悄修改系统包、关闭 TLS 校验或代替节点批准链历史。初始化仅创建并验证实际创世状态，`BOOTSTRAP_HISTORY_NOT_VERIFIED` 保留共识暂停和写操作关闭，直到真实链同步、恢复声明与对应区块证明通过独立验收。种子只负责发现，不获得特权。
 
 `Independent release deployment with own Gateway and ZDNS` 是手动 CI 验收流程：给出已经全部通过并发布的精确源码 revision 与 catalog SHA256，在空白 CI 主机上实际执行 deploy.py 的下载校验、安装、两个独立根目录初始化和 systemd 启动，以公开创世和明确证书 pin 建立真实原生 PING/PONG，检查两个身份不同且各自 Gateway/ZDNS/MCP/OpenCI 可用。证据不包含私钥或 token；同一 CI 主机不冒充两个物理故障域，也不宣称已经接受生产链的完整历史。
+
+### VPS、家庭节点与平台边界
+
+`bootstrap --connectivity outbound` 适用于没有公网 IP 的家庭节点：不调用公网 IP 探测服务、不把 NAT 出口误当本机可入站地址、不预填公共 STUN 服务、不自动启用 UPnP。自己的 Gateway/ZDNS/MCP/OpenCI 在本机提供相同能力，种子连接仍通过显式端点和证书 pin 发起。需要从外网访问家庭节点时，应由节点维护者选择端口映射、已配置的匿名载体或反向中继；脚本不会制造一个不存在的公网入口。公网 VPS 可显式设置 --public-ip，或使用 --connectivity public 请求出口探测；是否真的可入站仍须外部节点实测，配置成功不等于探测成功。
+
+协调器、应用和 OpenCI 服务采用 Python 便携包，安装管理器支持 Linux/systemd、macOS/launchd 和 Windows/任务计划；Windows 与 Android 奋斗端有各自 CI。完整 Corium 原生脚本依赖 GNU/Linux 与其运行依赖，因此 Windows 完整原生节点应在 WSL2/Linux VM 中运行，macOS 使用 Linux VM；管理器会明确拒绝把未验证的原生运行方式冒充该操作系统的完整节点。轻量编译当前严格支持 x86_64/aarch64，设备必须匹配所连节点，其他架构不能伪装领取。更多架构只有在实际构建和运行验收后才进入可用矩阵。

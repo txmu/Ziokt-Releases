@@ -25,7 +25,7 @@ def main():
             if index:
                 seed=nodes[0];genesis=Path(seed['corix_config']).parent/'genesis.json';certificate=Path(seed['corix_config']).parent/'tls.crt'
                 options={'seed_peer':'127.0.0.1:17234','gateway_peer':'http://127.0.0.1:18185','genesis':genesis,'genesis_sha256':deploy.sha(genesis),'seed_certificate':certificate,'seed_certificate_sha256':deploy.sha(certificate)}
-            node=deploy.bootstrap(root,network='ci-independent',public_ip='127.0.0.1',enable_services=True,service_prefix=prefix,p2p_port=17234+index*1000,gateway_port=18185+index*1000,mcp_port=18186+index*1000,openci_port=18768+index*1000,dns_port=15353+index*1000,doh_port=18188+index*1000,**options)
+            node=deploy.bootstrap(root,network='ci-independent',public_ip=None if index else '127.0.0.1',connectivity='outbound' if index else 'auto',enable_services=True,service_prefix=prefix,p2p_port=17234+index*1000,gateway_port=18185+index*1000,mcp_port=18186+index*1000,openci_port=18768+index*1000,dns_port=15353+index*1000,doh_port=18188+index*1000,**options)
             nodes.append(node)
         if nodes[0]['native']['identity']==nodes[1]['native']['identity']:raise RuntimeError('independent identity separation failed')
         if nodes[0]['native']['genesis_hash']!=nodes[1]['native']['genesis_hash']:raise RuntimeError('shared public genesis differs')
@@ -42,7 +42,7 @@ def main():
             with urllib.request.urlopen('http://127.0.0.1:'+str(18185+index*1000)+'/api/gateway/status',timeout=10) as response:status=json.load(response)
             if status['build']['source_commit']!=args.source_revision:raise RuntimeError('deployed Gateway source identity differs')
             if not json.loads(Path(node['consensus_hold']).read_text())['active']:raise RuntimeError('bootstrap must preserve unverified-history hold')
-            observations.append({'identity':node['native']['identity'],'genesis_hash':node['native']['genesis_hash'],'own_gateway':True,'own_zdns':True,'own_mcp':True,'own_openci':True,'unverified_history_consensus_held':True})
+            observations.append({'identity':node['native']['identity'],'genesis_hash':node['native']['genesis_hash'],'own_gateway':True,'own_zdns':True,'own_mcp':True,'own_openci':True,'unverified_history_consensus_held':True,'connectivity':node['connectivity']})
         (output/'acceptance.json').write_text(json.dumps({'schema':'ziokt.independent-deployment.v1','source_revision':args.source_revision,'catalog_sha256':args.catalog_sha256,'nodes':observations,'signed_native_ping':True,'production_identity_copied':False,'mainnet_consensus_acceptance':False,'physical_failure_domains':False,'native_compilation':False},indent=2)+'\n')
     finally:
         if units:subprocess.run(['systemctl','stop',*units],check=False,capture_output=True)

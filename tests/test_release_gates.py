@@ -48,3 +48,13 @@ class IndependentNodeInputTests(unittest.TestCase):
     def test_installer_requires_revision_wide_gate_not_one_passing_artifact(self):
         item={'id':'test/artifact','kind':'github-actions-artifact-zip','source_run_conclusion':'success'}
         with self.assertRaises(ValueError):deploy.plan({'artifacts':[item]},['test/*'])
+
+class OutboundNodeTests(unittest.TestCase):
+    def test_home_node_requires_no_public_ip_discovery_or_advertisement(self):
+        with tempfile.TemporaryDirectory() as directory,patch.object(deploy,'detect_public_ip',side_effect=AssertionError('unnecessary public IP probe')):
+            result=deploy.bootstrap(Path(directory),connectivity='outbound')
+            self.assertIsNone(result['public_ip']);self.assertEqual(result['connectivity']['mode'],'outbound');self.assertFalse(result['connectivity']['public_ip_advertised'])
+            text=Path(result['corix_config']).read_text();self.assertIn('public_ip = \n',text);self.assertIn('stun_servers =\n',text)
+    def test_public_mode_does_not_accept_private_address_as_public_reachability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):deploy.bootstrap(Path(directory),connectivity='public',public_ip='192.168.1.8')

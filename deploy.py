@@ -252,7 +252,7 @@ def detect_public_ip(proxy=None):
     return None
 
 
-def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False, service_prefix='ziokt', native_entrypoint=None, native_sha256=None, genesis=None, genesis_sha256=None, p2p_port=7234, gateway_port=8185, mcp_port=8186, openci_port=8768, dns_port=5353, doh_port=8188, seed_certificate=None, seed_certificate_sha256=None):
+def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False, service_prefix='ziokt', native_entrypoint=None, native_sha256=None, genesis=None, genesis_sha256=None, p2p_port=7234, gateway_port=8185, mcp_port=8186, openci_port=8768, dns_port=5353, doh_port=8188, seed_certificate=None, seed_certificate_sha256=None, connectivity='auto'):
     """Universal, location-independent node bootstrap with automatic public IP detection.
     
     Seed peer and gateway peer have no hardcoded defaults and are strictly configured via
@@ -301,7 +301,12 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
     if not pf['overall_pass']:
         raise ValueError('Preflight check failed: ' + json.dumps([c for c in pf['checks'] if not c['passed']], ensure_ascii=False))
 
-    detected_ip = str(ipaddress.ip_address(public_ip or detect_public_ip(proxy)))
+    if connectivity not in {'auto','public','outbound'}:raise ValueError('known node connectivity mode required')
+    if connectivity=='outbound' and public_ip is not None:raise ValueError('outbound-only nodes must not advertise a public IP')
+    detected_ip=str(ipaddress.ip_address(public_ip)) if public_ip is not None else (detect_public_ip(proxy) if connectivity=='public' else None)
+    if connectivity=='public' and (detected_ip is None or not ipaddress.ip_address(detected_ip).is_global):raise ValueError('public mode requires a global node IP')
+    connectivity_mode='outbound' if detected_ip is None else 'public' if ipaddress.ip_address(detected_ip).is_global else 'local'
+
     config_dir = root / 'config'
     state_dir = root / 'state'
     corium_dir = root / 'corium'
@@ -347,12 +352,12 @@ proxy =
 
 [p2p]
 port = {p2p_port}
-stun_servers = stun.l.google.com:19302,stun.nextcloud.com:443
+stun_servers =
 enable_upnp = false
 auto_trust_new_nodes = false
 tls_ech_enabled = false
 tls_no_sni_client = true
-public_ip = {detected_ip}
+public_ip = {detected_ip or ''}
 {seed_line}
 [blockchain]
 consensus = pos
@@ -499,6 +504,7 @@ allowed_resources = *
         'schema': 'ziokt.bootstrap-summary.v1',
         'network': network,
         'public_ip': detected_ip,
+        'connectivity':{'mode':connectivity_mode,'inbound_public_reachability':'not_assessed','public_ip_advertised':detected_ip is not None,'port_mapping_required':connectivity_mode=='outbound','automatic_relay_provisioned':False},
         'seed_peer': seed_peer,
         'gateway_peer': gateway_peer,
         'root': str(root),
@@ -531,10 +537,10 @@ def main():
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
     q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
-    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Public IP of this node (auto-detected if omitted)');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt');q.add_argument('--native-entrypoint',type=Path);q.add_argument('--native-sha256');q.add_argument('--genesis',type=Path);q.add_argument('--genesis-sha256');q.add_argument('--p2p-port',type=int,default=7234);q.add_argument('--gateway-port',type=int,default=8185);q.add_argument('--mcp-port',type=int,default=8186);q.add_argument('--openci-port',type=int,default=8768);q.add_argument('--dns-port',type=int,default=5353);q.add_argument('--doh-port',type=int,default=8188);q.add_argument('--seed-certificate',type=Path);q.add_argument('--seed-certificate-sha256')
+    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Public IP of this node (auto-detected if omitted)');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt');q.add_argument('--native-entrypoint',type=Path);q.add_argument('--native-sha256');q.add_argument('--genesis',type=Path);q.add_argument('--genesis-sha256');q.add_argument('--p2p-port',type=int,default=7234);q.add_argument('--gateway-port',type=int,default=8185);q.add_argument('--mcp-port',type=int,default=8186);q.add_argument('--openci-port',type=int,default=8768);q.add_argument('--dns-port',type=int,default=5353);q.add_argument('--doh-port',type=int,default=8188);q.add_argument('--seed-certificate',type=Path);q.add_argument('--seed-certificate-sha256');q.add_argument('--connectivity',choices=['auto','public','outbound'],default='auto')
     sub.add_parser('status');sub.add_parser('rollback');a=p.parse_args();root=a.root.expanduser().absolute()
     if a.action == 'bootstrap':
-        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix,a.native_entrypoint,a.native_sha256,a.genesis,a.genesis_sha256,a.p2p_port,a.gateway_port,a.mcp_port,a.openci_port,a.dns_port,a.doh_port,a.seed_certificate,a.seed_certificate_sha256)
+        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix,a.native_entrypoint,a.native_sha256,a.genesis,a.genesis_sha256,a.p2p_port,a.gateway_port,a.mcp_port,a.openci_port,a.dns_port,a.doh_port,a.seed_certificate,a.seed_certificate_sha256,a.connectivity)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return
     if a.action == 'preflight':
