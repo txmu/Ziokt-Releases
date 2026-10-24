@@ -29,7 +29,10 @@ SERVICES={'gateway':('ziokt.pyz',['gateway','serve']),'mcp':('ziokt.pyz',['mcp',
 
 
 def sha(path):
-    with path.open('rb') as stream:return hashlib.file_digest(stream,'sha256').hexdigest()
+    value=hashlib.sha256()
+    with path.open('rb') as stream:
+        for part in iter(lambda:stream.read(1024*1024),b''):value.update(part)
+    return value.hexdigest()
 def write(path,value,private=True):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     if path.is_symlink():raise ValueError('symlink state/config rejected')
@@ -306,6 +309,7 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
     openci_dir = state_dir / 'openci'
 
     for d in (config_dir, state_dir, corium_dir, mcp_state, openci_dir):
+        if not d.resolve().is_relative_to(root) or any(part.is_symlink() for part in (d,*d.parents) if part!=root and root in part.parents):raise ValueError('node state directories must remain inside the regular installation root')
         d.mkdir(parents=True, mode=0o700, exist_ok=True)
         d.chmod(0o700)
 
