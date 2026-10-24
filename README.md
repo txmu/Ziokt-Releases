@@ -21,7 +21,10 @@ All installers and client packages are hosted on the `txmu/Ziokt-Releases` GitHu
 # 预检环境
 curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- preflight
 
-# 通用全节点一键部署（自动探测公网IP、配置生成、接入主网并启用服务）
+# 通用全节点一键部署（新节点接入已有主网，通过命令行参数显式指定种子节点与网关）：
+curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- bootstrap --seed-peer 13.193.103.220:7234 --gateway-peer http://13.193.103.220:8080 --enable-services
+
+# 或作为初始/独立节点部署（不配置远端种子）：
 curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- bootstrap --enable-services
 
 # 或便携版客户端安装

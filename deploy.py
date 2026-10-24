@@ -242,8 +242,12 @@ def detect_public_ip(proxy=None):
     return None
 
 
-def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer='43.207.75.185:7234', gateway_peer='http://43.207.75.185:8080', proxy=None, enable_services=False):
-    """Universal, location-independent node bootstrap with automatic public IP detection."""
+def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False):
+    """Universal, location-independent node bootstrap with automatic public IP detection.
+    
+    Seed peer and gateway peer have no hardcoded defaults and are strictly configured via
+    command parameters when bootstrapping a node to join an existing network.
+    """
     root = Path(root).expanduser().resolve()
     pf = preflight(root, proxy=proxy)
     if not pf['overall_pass']:
@@ -297,6 +301,7 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer='43.207.75.1
     }
     write(hold_file, hold_doc)
 
+    seed_line = f"seed_peers = {seed_peer}\n" if seed_peer else "seed_peers = \n"
     corix_conf = config_dir / 'corix.conf'
     corix_content = f"""[main]
 dep_mode = manual
@@ -317,8 +322,7 @@ auto_trust_new_nodes = false
 tls_ech_enabled = false
 tls_no_sni_client = true
 public_ip = {detected_ip}
-seed_peers = {seed_peer}
-
+{seed_line}
 [blockchain]
 consensus = pos
 weak_subjectivity_checkpoints = "64:14fa5ebfa33070d5e5537f1184e8ea4fff7813d064ac99e7b7d35e8bf4e89123"
@@ -410,6 +414,8 @@ allowed_resources = *
         'schema': 'ziokt.bootstrap-summary.v1',
         'network': network,
         'public_ip': detected_ip,
+        'seed_peer': seed_peer,
+        'gateway_peer': gateway_peer,
         'root': str(root),
         'admin_token': str(token_file),
         'gateway_config': str(gateway_file),
@@ -437,7 +443,7 @@ def main():
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
     q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
-    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip');q.add_argument('--seed-peer',default='43.207.75.185:7234');q.add_argument('--gateway-peer',default='http://43.207.75.185:8080');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true')
+    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Public IP of this node (auto-detected if omitted)');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true')
     sub.add_parser('status');sub.add_parser('rollback');a=p.parse_args();root=a.root.expanduser().absolute()
     if a.action == 'bootstrap':
         res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services)
