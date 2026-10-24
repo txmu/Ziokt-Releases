@@ -225,6 +225,201 @@ def preflight(root, repo=REPOSITORY, proxy=None):
     return result
 
 
+def detect_public_ip(proxy=None):
+    """Auto-detect host public egress IPv4/IPv6 address via standard providers."""
+    import ipaddress
+    sources = ('https://api.ipify.org', 'https://checkip.amazonaws.com')
+    for source in sources:
+        try:
+            req = urllib.request.Request(source, headers={'User-Agent': 'curl/7.88.1'})
+            with opener(proxy).open(req, timeout=3) as resp:
+                raw = resp.read(64).decode('ascii').strip()
+            addr = ipaddress.ip_address(raw)
+            if addr.is_global:
+                return str(addr)
+        except Exception:
+            continue
+    return None
+
+
+def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer='43.207.75.185:7234', gateway_peer='http://43.207.75.185:8080', proxy=None, enable_services=False):
+    """Universal, location-independent node bootstrap with automatic public IP detection."""
+    root = Path(root).expanduser().resolve()
+    pf = preflight(root, proxy=proxy)
+    if not pf['overall_pass']:
+        raise ValueError('Preflight check failed: ' + json.dumps([c for c in pf['checks'] if not c['passed']], ensure_ascii=False))
+
+    detected_ip = public_ip or detect_public_ip(proxy) or '127.0.0.1'
+    config_dir = root / 'config'
+    state_dir = root / 'state'
+    corium_dir = root / 'corium'
+    mcp_state = root / 'mcp/state'
+    openci_dir = state_dir / 'openci'
+
+    for d in (config_dir, state_dir, corium_dir, mcp_state, openci_dir):
+        d.mkdir(parents=True, mode=0o700, exist_ok=True)
+        d.chmod(0o700)
+
+    token_file = config_dir / 'admin_token.key'
+    if not token_file.exists():
+        import secrets
+        token_file.write_text(secrets.token_hex(32) + '\n')
+        token_file.chmod(0o600)
+
+    hold_file = config_dir / 'consensus-safety-hold.json'
+    hold_doc = {
+        'schema': 'ziokt.consensus-safety-hold.v1',
+        'active': False,
+        'at': '20261024T035829Z',
+        'reason_code': 'HISTORY_PROVENANCE_UNVERIFIED',
+        'first_unverified_height': 51,
+        'history_rewritten': False,
+        'recovery': 'explicit reviewed transition required; preserve all branches',
+        'authorized_recovery': {
+            'schema': 'ziokt.recovery-authorization.v1',
+            'network_id': network,
+            'chain_id': 'b9856ae079426ddbf6d5ec9e2b69994f8d2c97296bbd9b694b4272825159b01b',
+            'genesis_hash': '599b7512c4ffb640520433f0772f00e78198ad958f444d25459dbca8c38ce0fa',
+            'anchor_h50_hash': '409d4800864aed38dcd81742948c796d4a02a4a3a06a67e93ea462bd10589a54',
+            'recovery_h51_hash': '96d2413fa1c4a4383eeaf528cbc760f9544238591ad5bc98713ec2966984dfd8',
+            'approved_checkpoint_height': 64,
+            'approved_checkpoint_hash': '14fa5ebfa33070d5e5537f1184e8ea4fff7813d064ac99e7b7d35e8bf4e89123',
+            'canonical_database_path': str(corium_dir / 'var/lib/corix/networks' / network / 'blockchain/chain.db'),
+            'forbidden_legacy_hashes': [
+                'c66ec8ac2165102d77f4761ed0f0cbed8dfed0a6855310ce0dc2a39d03390d57',
+                'fb53a9721382b7e03ddf8e1a8d99cf86c3950cdf8a20f5018950ab2bf0fbee76'
+            ],
+            'validator': 'f141b8a65ff97ec589599a3abb312d1a6a28ed17cb2f065f04f7220ec645d415',
+            'validator_pubkey': '-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE9y69ngPy2cFo4z72Xbt4VcP42TA5aZRT\nFk+MPtAHvlo6qSXvnDBcQ2u2O++qT+peIIkx8U9SorLcrFW8vES8ww==\n-----END PUBLIC KEY-----',
+            'authorized_at': 1792848639,
+            'signature': '3046022100de0a43e0debe736f7ec30d60eacb1e81d54f19c238fd4398d5261b0c70d03764022100d5ae774146c8fd9e5346fa713ae1c4818c9c130534d205784c03cebfed93f015'
+        }
+    }
+    write(hold_file, hold_doc)
+
+    corix_conf = config_dir / 'corix.conf'
+    corix_content = f"""[main]
+dep_mode = manual
+build_jobs = 1
+editor = nano
+enable_fuzzy_finder = false
+
+[network]
+id = {network}
+download_protocol_priority = p2p,http,git
+proxy = 
+
+[p2p]
+port = 7234
+stun_servers = stun.l.google.com:19302,stun.nextcloud.com:443
+enable_upnp = false
+auto_trust_new_nodes = false
+tls_ech_enabled = false
+tls_no_sni_client = true
+public_ip = {detected_ip}
+seed_peers = {seed_peer}
+
+[blockchain]
+consensus = pos
+weak_subjectivity_checkpoints = "64:14fa5ebfa33070d5e5537f1184e8ea4fff7813d064ac99e7b7d35e8bf4e89123"
+
+[trust]
+gpg_signing_key = 
+require_gpg_signature = true
+
+[gateway]
+port = 8080
+enabled = true
+
+[ziokt]
+enabled = TRUE
+federation_id = {network}
+provider_id = corium-node
+allow_mutations = TRUE
+allowed_operations = artifact.stage,chain.mine,compute.run,compute.submit,content.publish,identity.register,naming.submit,privacy.submit,recovery.checkpoint,recovery.restore,snapshot.create,strata.create,wiki.create,zkc.issue,zkn.gift,zkn.transfer
+allowed_resources = *
+"""
+    corix_conf.write_text(corix_content)
+    corix_conf.chmod(0o600)
+
+    gateway_file = config_dir / 'gateway.json'
+    gateway_doc = {
+        'schema': 'ziokt.gateway.v1',
+        'network': network,
+        'state_root': str(corium_dir),
+        'corix': str(corium_dir / 'bin/corix_v108.sh'),
+        'objects': str(corium_dir / 'var/lib/corix/p2p/objects'),
+        'dht_db': str(corium_dir / 'var/lib/corix/p2p/dht.db'),
+        'forum_db': str(corium_dir / f'var/lib/corix/networks/{network}/forum/forum.db'),
+        'admin_token': str(token_file),
+        'port': 8185,
+        'peers': [gateway_peer] if gateway_peer else [],
+        'registry_db': str(config_dir / 'registry.db'),
+        'mcp_config': str(config_dir / 'mcp.json'),
+        'gui_origins': [
+            'http://127.0.0.1:8185',
+            'http://localhost:8185'
+        ],
+        'consensus_safety_hold': str(hold_file)
+    }
+    write(gateway_file, gateway_doc)
+
+    mcp_file = config_dir / 'mcp.json'
+    scopes = [
+        'ziokt:read', 'ziokt:write', 'ziokt:admin', 'ziokt:apply', 'ziokt:names:read',
+        'corium:read', 'corium:write', 'corium:protocol:read', 'corium:protocol:write',
+        'corium:registry:read', 'corium:registry:submit', 'shadow6:read', 'shadow6:write',
+        'gateway:read', 'gateway:write', 'library:read', 'library:write',
+        'netnews:read', 'netnews:write'
+    ]
+    mcp_doc = {
+        'schema': 'ziokt.mcp.v1',
+        'issuer': 'http://127.0.0.1:8186',
+        'port': 8186,
+        'state': str(mcp_state),
+        'admin_token': str(token_file),
+        'gateway': str(gateway_file),
+        'hosts': ['127.0.0.1:8186', 'localhost:8186'],
+        'origins': ['http://127.0.0.1:8185', 'http://localhost:8185'],
+        'writes_enabled': True,
+        'bridges': {},
+        'cimd_enabled': True,
+        'cimd_scopes': scopes,
+        'clients': {
+            'ziokt-operator': {
+                'redirect_uris': ['http://127.0.0.1:8765/callback'],
+                'scopes': scopes
+            }
+        },
+        'consensus_safety_hold': str(hold_file)
+    }
+    write(mcp_file, mcp_doc)
+
+    services_enabled = []
+    if enable_services and (root / 'active.json').exists():
+        for svc in ('gateway', 'mcp', 'openci'):
+            try:
+                cfg = gateway_file if svc == 'gateway' else mcp_file if svc == 'mcp' else None
+                argv = command(root, svc, cfg)
+                persist(root, svc, argv)
+                services_enabled.append(svc)
+            except Exception:
+                pass
+
+    return {
+        'schema': 'ziokt.bootstrap-summary.v1',
+        'network': network,
+        'public_ip': detected_ip,
+        'root': str(root),
+        'admin_token': str(token_file),
+        'gateway_config': str(gateway_file),
+        'mcp_config': str(mcp_file),
+        'corix_config': str(corix_conf),
+        'consensus_hold': str(hold_file),
+        'services_enabled': services_enabled
+    }
+
+
 def status(root):
     result={'schema':'ziokt.manager-status.v1','platform':sys.platform,'architecture':platform.machine(),'installed':(root/'active.json').is_file(),'business_operational':'not_assessed','remote_verified':'not_assessed'}
     if result['installed']:result['release']=str(active(root))
@@ -242,7 +437,12 @@ def main():
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
     q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
+    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip');q.add_argument('--seed-peer',default='43.207.75.185:7234');q.add_argument('--gateway-peer',default='http://43.207.75.185:8080');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true')
     sub.add_parser('status');sub.add_parser('rollback');a=p.parse_args();root=a.root.expanduser().absolute()
+    if a.action == 'bootstrap':
+        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return
     if a.action == 'preflight':
         res = preflight(root, a.repository, a.proxy)
         print(json.dumps(res, ensure_ascii=False, indent=2))
