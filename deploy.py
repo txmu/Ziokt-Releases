@@ -5,6 +5,7 @@ Only fixed Ziokt service entrypoints are executed. User data and existing
 credentials are never removed. Installing a binary does not activate consensus.
 """
 import argparse
+import ipaddress
 import fnmatch
 import hashlib
 import json
@@ -77,6 +78,7 @@ def plan(catalog_value,selection,include=(),exclude=()):
     chosen=[]
     for item in catalog_value['artifacts']:
         if not any(fnmatch.fnmatchcase(item['id'],pattern) for pattern in selection):continue
+        if item.get('kind')=='github-actions-artifact-zip' and item.get('source_run_conclusion')!='success':raise ValueError('only successful CI artifacts may be installed')
         if not re.fullmatch('[a-f0-9]{64}',item['sha256']) or not 0<item['bytes']<=2*1024**3:raise ValueError('artifact integrity declaration invalid')
         files=[f for f in item.get('files',[]) if (not include or any(fnmatch.fnmatchcase(f['path'],p) for p in include)) and not any(fnmatch.fnmatchcase(f['path'],p) for p in exclude)]
         if files:chosen.append({**item,'selected_files':files})
@@ -155,8 +157,9 @@ def command(root,service,config=None,port=8768):
     return [python_executable(root),str(binary),*args,'--config',str(config)]
 
 
-def persist(root,service,argv):
-    name='ziokt-'+service
+def persist(root,service,argv,name=None):
+    name=name or 'ziokt-'+service
+    if not re.fullmatch('[A-Za-z0-9_-]{1,128}',name):raise ValueError('safe explicit service name required')
     if sys.platform.startswith('linux'):
         def escape(value):return '"'+value.replace('\\','\\\\').replace('"','\\"').replace('%','%%').replace('\n','\\n')+'"'
         system=os.geteuid()==0;directory=Path('/etc/systemd/system') if system else Path.home()/'.config/systemd/user';directory.mkdir(parents=True,exist_ok=True)
@@ -242,18 +245,29 @@ def detect_public_ip(proxy=None):
     return None
 
 
-def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False):
+def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gateway_peer=None, proxy=None, enable_services=False, service_prefix='ziokt'):
     """Universal, location-independent node bootstrap with automatic public IP detection.
     
     Seed peer and gateway peer have no hardcoded defaults and are strictly configured via
     command parameters when bootstrapping a node to join an existing network.
     """
     root = Path(root).expanduser().resolve()
+    if not re.fullmatch('[A-Za-z0-9_-]{1,64}',network) or not re.fullmatch('[A-Za-z0-9_-]{1,64}',service_prefix):raise ValueError('safe network and service prefix required')
+    if any((root/relative).exists() for relative in ('config/gateway.json','config/mcp.json','config/corix.conf','config/consensus-safety-hold.json')):raise ValueError('existing node configuration retained; bootstrap requires a fresh config directory')
+    if enable_services and not (root/'active.json').is_file():raise ValueError('install a reviewed successful CI bundle before enabling services')
+    if seed_peer is not None:
+        endpoint=urlsplit('//'+seed_peer)
+        try:port=endpoint.port
+        except ValueError:raise ValueError('valid seed port required') from None
+        if not endpoint.hostname or not port or endpoint.username or endpoint.password or endpoint.path or endpoint.query or endpoint.fragment or any(c.isspace() for c in seed_peer):raise ValueError('exact seed host:port required')
+    if gateway_peer is not None:
+        endpoint=urlsplit(gateway_peer)
+        if endpoint.scheme not in {'http','https'} or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.path not in {'','/'} or endpoint.query or endpoint.fragment or any(c.isspace() for c in gateway_peer):raise ValueError('exact HTTP/HTTPS gateway origin required')
     pf = preflight(root, proxy=proxy)
     if not pf['overall_pass']:
         raise ValueError('Preflight check failed: ' + json.dumps([c for c in pf['checks'] if not c['passed']], ensure_ascii=False))
 
-    detected_ip = public_ip or detect_public_ip(proxy) or '127.0.0.1'
+    detected_ip = str(ipaddress.ip_address(public_ip or detect_public_ip(proxy)))
     config_dir = root / 'config'
     state_dir = root / 'state'
     corium_dir = root / 'corium'
@@ -272,32 +286,10 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
 
     hold_file = config_dir / 'consensus-safety-hold.json'
     hold_doc = {
-        'schema': 'ziokt.consensus-safety-hold.v1',
-        'active': False,
-        'at': '20261024T035829Z',
-        'reason_code': 'HISTORY_PROVENANCE_UNVERIFIED',
-        'first_unverified_height': 51,
-        'history_rewritten': False,
-        'recovery': 'explicit reviewed transition required; preserve all branches',
-        'authorized_recovery': {
-            'schema': 'ziokt.recovery-authorization.v1',
-            'network_id': network,
-            'chain_id': 'b9856ae079426ddbf6d5ec9e2b69994f8d2c97296bbd9b694b4272825159b01b',
-            'genesis_hash': '599b7512c4ffb640520433f0772f00e78198ad958f444d25459dbca8c38ce0fa',
-            'anchor_h50_hash': '409d4800864aed38dcd81742948c796d4a02a4a3a06a67e93ea462bd10589a54',
-            'recovery_h51_hash': '96d2413fa1c4a4383eeaf528cbc760f9544238591ad5bc98713ec2966984dfd8',
-            'approved_checkpoint_height': 64,
-            'approved_checkpoint_hash': '14fa5ebfa33070d5e5537f1184e8ea4fff7813d064ac99e7b7d35e8bf4e89123',
-            'canonical_database_path': str(corium_dir / 'var/lib/corix/networks' / network / 'blockchain/chain.db'),
-            'forbidden_legacy_hashes': [
-                'c66ec8ac2165102d77f4761ed0f0cbed8dfed0a6855310ce0dc2a39d03390d57',
-                'fb53a9721382b7e03ddf8e1a8d99cf86c3950cdf8a20f5018950ab2bf0fbee76'
-            ],
-            'validator': 'f141b8a65ff97ec589599a3abb312d1a6a28ed17cb2f065f04f7220ec645d415',
-            'validator_pubkey': '-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE9y69ngPy2cFo4z72Xbt4VcP42TA5aZRT\nFk+MPtAHvlo6qSXvnDBcQ2u2O++qT+peIIkx8U9SorLcrFW8vES8ww==\n-----END PUBLIC KEY-----',
-            'authorized_at': 1792848639,
-            'signature': '3046022100de0a43e0debe736f7ec30d60eacb1e81d54f19c238fd4398d5261b0c70d03764022100d5ae774146c8fd9e5346fa713ae1c4818c9c130534d205784c03cebfed93f015'
-        }
+        'schema':'ziokt.consensus-safety-hold.v1','active':True,
+        'reason_code':'BOOTSTRAP_HISTORY_NOT_VERIFIED','network':network,
+        'history_rewritten':False,
+        'recovery':'Verify actual chain identity, genesis, signed declarations and block proofs before explicitly enabling consensus.'
     }
     write(hold_file, hold_doc)
 
@@ -325,7 +317,7 @@ public_ip = {detected_ip}
 {seed_line}
 [blockchain]
 consensus = pos
-weak_subjectivity_checkpoints = "64:14fa5ebfa33070d5e5537f1184e8ea4fff7813d064ac99e7b7d35e8bf4e89123"
+weak_subjectivity_checkpoints =
 
 [trust]
 gpg_signing_key = 
@@ -349,6 +341,7 @@ allowed_resources = *
     gateway_file = config_dir / 'gateway.json'
     gateway_doc = {
         'schema': 'ziokt.gateway.v1',
+        'service_units':{role:service_prefix+'-'+suffix for role,suffix in {'p2p':'corium-p2p','consensus':'corium-consensus','relayer':'corium-relayer','gateway':'gateway','mcp':'mcp','telegram':'telegram-bot'}.items()},
         'network': network,
         'state_root': str(corium_dir),
         'corix': str(corium_dir / 'bin/corix_v108.sh'),
@@ -370,7 +363,7 @@ allowed_resources = *
 
     mcp_file = config_dir / 'mcp.json'
     scopes = [
-        'ziokt:read', 'ziokt:write', 'ziokt:admin', 'ziokt:apply', 'ziokt:names:read',
+        'ziokt:read', 'ziokt:write', 'ziokt:admin', 'ziokt:apply', 'ziokt:names:read','ziokt:names:write','ziokt:evidence:write',
         'corium:read', 'corium:write', 'corium:protocol:read', 'corium:protocol:write',
         'corium:registry:read', 'corium:registry:submit', 'shadow6:read', 'shadow6:write',
         'gateway:read', 'gateway:write', 'library:read', 'library:write',
@@ -385,7 +378,7 @@ allowed_resources = *
         'gateway': str(gateway_file),
         'hosts': ['127.0.0.1:8186', 'localhost:8186'],
         'origins': ['http://127.0.0.1:8185', 'http://localhost:8185'],
-        'writes_enabled': True,
+        'writes_enabled': False,
         'bridges': {},
         'cimd_enabled': True,
         'cimd_scopes': scopes,
@@ -405,10 +398,10 @@ allowed_resources = *
             try:
                 cfg = gateway_file if svc == 'gateway' else mcp_file if svc == 'mcp' else None
                 argv = command(root, svc, cfg)
-                persist(root, svc, argv)
+                persist(root, svc, argv,service_prefix+'-'+svc)
                 services_enabled.append(svc)
-            except Exception:
-                pass
+            except Exception as error:
+                raise RuntimeError('service activation failed: '+svc+'; configuration preserved for review') from error
 
     return {
         'schema': 'ziokt.bootstrap-summary.v1',
@@ -422,7 +415,9 @@ allowed_resources = *
         'mcp_config': str(mcp_file),
         'corix_config': str(corix_conf),
         'consensus_hold': str(hold_file),
-        'services_enabled': services_enabled
+        'services_enabled': services_enabled,
+        'native_consensus_ready':False,
+        'service_prefix':service_prefix
     }
 
 
@@ -443,10 +438,10 @@ def main():
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
     q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
-    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Public IP of this node (auto-detected if omitted)');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true')
+    q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Public IP of this node (auto-detected if omitted)');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt')
     sub.add_parser('status');sub.add_parser('rollback');a=p.parse_args();root=a.root.expanduser().absolute()
     if a.action == 'bootstrap':
-        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services)
+        res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return
     if a.action == 'preflight':

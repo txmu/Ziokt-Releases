@@ -55,12 +55,30 @@ def prior_catalog(directory):
     return value
 
 
+def verified_commit(repository,revision):
+    latest={};page=1
+    while True:
+        data=api(f'repos/{repository}/actions/runs?head_sha={revision}&per_page=100&page={page}')
+        for run in data['workflow_runs']:
+            if run['head_sha']!=revision or run['head_repository']['full_name']!=repository:continue
+            key=run.get('workflow_id',run.get('path'))
+            if key not in latest or run['id']>latest[key]['id']:latest[key]=run
+        if len(data['workflow_runs'])<100:break
+        page+=1
+        if page>10:raise ValueError('commit check inventory exceeds budget')
+    if not latest or any(run['status']!='completed' or run['conclusion']!='success' for run in latest.values()):
+        raise ValueError('all workflows for the exact source revision must pass before publication')
+    return sorted(run['html_url'] for run in latest.values())
+
+
 def publish_run(repository,run_id,directory):
     source=next((s for s in json.loads((ROOT/'sources.json').read_text())['sources'] if s['repository']==repository),None)
     if not source:raise ValueError('source repository is not approved')
     run=api(f'repos/{repository}/actions/runs/{int(run_id)}')
     if run['status']!='completed' or run['event'] not in {'push','workflow_dispatch','schedule','release'} or run['head_repository']['full_name']!=repository:
         raise ValueError('only completed trusted owner build events may publish')
+    if run['conclusion']!='success':raise ValueError('failed or cancelled builds cannot publish artifacts')
+    checks=verified_commit(repository,run['head_sha'])
     artifacts=api(f'repos/{repository}/actions/runs/{int(run_id)}/artifacts?per_page=100')['artifacts']
     filters=json.loads((ROOT/'sources.json').read_text())['exclude_fragments']
     artifacts=[a for a in artifacts if not a['expired'] and any(a['name'].startswith(p) for p in source['prefixes']) and not any(f in a['name'] for f in filters)]
@@ -84,7 +102,7 @@ def publish_run(repository,run_id,directory):
         if declared and declared!='sha256:'+digest:raise ValueError('source Actions artifact digest mismatch')
         members=archive_members(path)
         records.append({'id':repository+'/'+name,'name':name,'kind':'github-actions-artifact-zip','file':path.name,'url':f'https://github.com/{HUB}/releases/download/{quote(tag,safe="")}/{quote(path.name,safe="")}', 'sha256':digest,'bytes':path.stat().st_size,'source_repository':repository,'source_revision':run['head_sha'],'source_run':run['html_url'],'source_run_conclusion':run['conclusion'],'source_artifact_id':artifact['id'],'source_artifact_digest_verified':bool(declared),'individual_business_acceptance':'not_assessed','files':members})
-    manifest={'schema':'ziokt.distribution-build.v1','source_repository':repository,'source_revision':run['head_sha'],'source_run':run['html_url'],'source_run_conclusion':run['conclusion'],'artifacts':records,'assurance':'Transfer and source digest verification are separate from build, signing, runtime and business acceptance.'}
+    manifest={'schema':'ziokt.distribution-build.v1','source_repository':repository,'source_revision':run['head_sha'],'source_run':run['html_url'],'source_run_conclusion':run['conclusion'],'artifacts':records,'verified_revision_workflows':checks,'assurance':'Transfer and source digest verification are separate from build, signing, runtime and business acceptance.'}
     (area/'build-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
     (area/'SHA256SUMS').write_text(''.join(file_sha(p)+'  '+p.name+'\n' for p in sorted(area.iterdir()) if p.is_file()))
     notes=area/'release-notes.md';notes.write_text(f'Source: {repository}@{run["head_sha"]}\n\nCI: {run["html_url"]}\n\nOverall workflow: {run["conclusion"]}. An uploaded artifact is not proof that every test passed. Signing and platform requirements are inherited from the source build; no store signing is added.\n')
@@ -100,7 +118,7 @@ def publish_run(repository,run_id,directory):
 def publish(repository=None,run_id=None,limit=100):
     validate_repository(HUB)
     with tempfile.TemporaryDirectory(prefix='ziokt-release-') as temporary:
-        area=Path(temporary);catalog=prior_catalog(area);records={r['id']:r for r in catalog['artifacts']}
+        area=Path(temporary);catalog=prior_catalog(area);records={r['id']:r for r in catalog['artifacts'] if r.get('source_run_conclusion') not in {'failure','cancelled','timed_out','action_required'}}
         sources=json.loads((ROOT/'sources.json').read_text())['sources']
         for source in sources:
             repo=source['repository']
