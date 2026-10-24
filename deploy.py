@@ -177,6 +177,54 @@ def persist(root,service,argv):
     raise ValueError('persistence backend unsupported on this platform')
 
 
+def preflight(root, repo=REPOSITORY, proxy=None):
+    root = Path(root).expanduser().resolve()
+    checks = []
+    def record(name, passed, detail=''):
+        checks.append({'name': name, 'passed': passed, 'detail': detail})
+        return passed
+    all_pass = True
+    all_pass &= record('python_version', sys.version_info >= (3, 10), f'python {sys.version.split()[0]} (>= 3.10)')
+    all_pass &= record('platform_supported', sys.platform in {'linux', 'darwin', 'win32'}, sys.platform)
+    arch = platform.machine().lower()
+    all_pass &= record('architecture_supported', arch in {'x86_64', 'amd64', 'aarch64', 'arm64'}, arch)
+    try:
+        if root.is_symlink(): raise ValueError('root cannot be a symlink')
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / '.preflight-probe'
+        probe.write_text('ok'); probe.unlink()
+        writable = True
+    except Exception as e:
+        writable = False
+    all_pass &= record('installation_root_writable', writable, str(root))
+    backend_ok = False; backend_name = 'unknown'
+    if sys.platform.startswith('linux'):
+        system = os.geteuid() == 0
+        backend_ok = shutil.which('systemctl') is not None
+        backend_name = 'systemd (system)' if system else 'systemd (user)'
+    elif sys.platform == 'darwin':
+        backend_ok = shutil.which('launchctl') is not None
+        backend_name = 'launchd'
+    elif os.name == 'nt':
+        backend_ok = shutil.which('schtasks') is not None
+        backend_name = 'schtasks'
+    all_pass &= record('persistence_backend_available', backend_ok, backend_name)
+    try:
+        valid_repo(repo)
+        repo_ok = True
+    except ValueError:
+        repo_ok = False
+    all_pass &= record('release_repository_valid', repo_ok, repo)
+    result = {
+        'schema': 'ziokt.deploy-preflight.v1',
+        'overall_pass': all_pass,
+        'checks': checks,
+        'root': str(root),
+        'repository': repo
+    }
+    return result
+
+
 def status(root):
     result={'schema':'ziokt.manager-status.v1','platform':sys.platform,'architecture':platform.machine(),'installed':(root/'active.json').is_file(),'business_operational':'not_assessed','remote_verified':'not_assessed'}
     if result['installed']:result['release']=str(active(root))
@@ -193,8 +241,18 @@ def main():
     for name in ('plan','install'):
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
+    q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
     sub.add_parser('status');sub.add_parser('rollback');a=p.parse_args();root=a.root.expanduser().absolute()
+    if a.action == 'preflight':
+        res = preflight(root, a.repository, a.proxy)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        if not res['overall_pass']: raise SystemExit(1)
+        return
     if a.action in {'plan','install'}:
+        if a.action == 'install':
+            pf = preflight(root, a.repository, a.proxy)
+            if not pf['overall_pass']:
+                raise ValueError('Preflight check failed: ' + json.dumps([c for c in pf['checks'] if not c['passed']], ensure_ascii=False))
         with tempfile.TemporaryDirectory(prefix='ziokt-plan-') as temporary:
             selection=a.artifact or (['txmu/Ziokt/ziokt-enabled-native-artifacts'] if a.profile in {'gateway','openci'} else ['txmu/Ziokt/ziokt-'+('windows-latest' if os.name=='nt' else 'macos-latest' if sys.platform=='darwin' else 'ubuntu-24.04')] if a.profile=='portable' else [])
             if not selection:p.error('choose --profile or explicit --artifact selectors')
