@@ -17,6 +17,7 @@ def main():
     try:
         catalog=deploy.catalog(deploy.REPOSITORY,output,expected=args.catalog_sha256)
         approved=deploy.plan(catalog,['txmu/Ziokt/ziokt-enabled-native-artifacts','txmu/Ziokt/openci-light-compiler-'+args.source_revision],include=['*.pyz','corix-ziokt.sh','*.wasm','*.js','manifest.json'])
+        if len(approved['artifacts'])!=2:raise RuntimeError('both exact native and compiler bundles required')
         if any(a['source_revision']!=args.source_revision or a.get('all_revision_workflows_passed') is not True for a in approved['artifacts']):raise RuntimeError('only the exact completed green revision may enter independent deployment acceptance')
         for index in range(2):
             root=output/('seed' if index==0 else 'client');deploy.install(root,approved)
@@ -41,8 +42,13 @@ def main():
             if not sites['configured'] or sites['default_resolver']!='node-zdns':raise RuntimeError('own-node ZDNS site resolution unavailable')
             with urllib.request.urlopen('http://127.0.0.1:'+str(18185+index*1000)+'/api/gateway/status',timeout=10) as response:status=json.load(response)
             if status['build']['source_commit']!=args.source_revision:raise RuntimeError('deployed Gateway source identity differs')
+            with urllib.request.urlopen('http://127.0.0.1:'+str(18081+index*1000)+'/api/people/config',timeout=10) as response:effort=json.load(response)
+            if effort['network_id']!='ci-independent':raise RuntimeError('effort client network binding differs')
+            with urllib.request.urlopen('http://127.0.0.1:'+str(18081+index*1000)+'/openci/v1/light/config',timeout=10) as response:light=json.load(response)
+            if light['node_arch'] not in light['targets'] or light['cross_compile'] is not False:raise RuntimeError('own pinned native-architecture compiler unavailable')
+
             if not json.loads(Path(node['consensus_hold']).read_text())['active']:raise RuntimeError('bootstrap must preserve unverified-history hold')
-            observations.append({'identity':node['native']['identity'],'genesis_hash':node['native']['genesis_hash'],'own_gateway':True,'own_zdns':True,'own_mcp':True,'own_openci':True,'unverified_history_consensus_held':True,'connectivity':node['connectivity']})
+            observations.append({'identity':node['native']['identity'],'genesis_hash':node['native']['genesis_hash'],'own_gateway':True,'own_zdns':True,'own_mcp':True,'own_openci':True,'own_effort':True,'own_compiler_admission':True,'unverified_history_consensus_held':True,'connectivity':node['connectivity']})
         (output/'acceptance.json').write_text(json.dumps({'schema':'ziokt.independent-deployment.v1','source_revision':args.source_revision,'catalog_sha256':args.catalog_sha256,'nodes':observations,'signed_native_ping':True,'production_identity_copied':False,'mainnet_consensus_acceptance':False,'physical_failure_domains':False,'native_compilation':False},indent=2)+'\n')
     finally:
         if units:subprocess.run(['systemctl','stop',*units],check=False,capture_output=True)
