@@ -42,6 +42,22 @@ class GateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'approved release branches'):publisher.publish_run('txmu/Ziokt',1,Path(directory))
 
 class IndependentNodeInputTests(unittest.TestCase):
+    def test_each_node_provisions_its_own_content_infrastructure_without_public_writes(self):
+        with tempfile.TemporaryDirectory() as directory,patch.object(deploy,'preflight',return_value={'overall_pass':True}):
+            configs=[]
+            for name in ('first','second'):
+                root=Path(directory)/name
+                result=deploy.bootstrap(root,connectivity='outbound',service_prefix='test-'+name)
+                config=json.loads(Path(result['mcp_config']).read_text())
+                self.assertTrue(config['content_fabric']['enabled'])
+                self.assertEqual(Path(config['content_fabric']['root']),root/'state/content')
+                self.assertEqual(config['content_fabric']['accounts'],{'ziokt-operator':'owner'})
+                self.assertIn('content:read',config['cimd_scopes'])
+                self.assertNotIn('content:write',config['cimd_scopes'])
+                self.assertFalse(config['writes_enabled'])
+                configs.append(config)
+            self.assertNotEqual(configs[0]['content_fabric']['root'],configs[1]['content_fabric']['root'])
+
     def test_root_links_port_collisions_and_unpinned_native_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);target=base/'target';target.mkdir();link=base/'link';link.symlink_to(target,target_is_directory=True)

@@ -1,4 +1,4 @@
-"""CI-only: install an already green release into two fresh native node roots.
+"""CI-only: install an already green release into three fresh native node roots.
 
 Uses actual deploy/bootstrap/systemd/ZDNS/TLS-native APIs. No production keys,
 mainnet transactions, public scanning, proof fabrication or native compilation.
@@ -39,7 +39,7 @@ def main():
             result=subprocess.run(['bash','-c',command,'peer-check',str(root/'bin/corix_v108.sh'),target['native']['identity'],str(port)],env=dict(os.environ,CORIUM_ROOT=str(root),CORIUM_NETWORK_ID_OVERRIDE='ci-independent'),text=True,capture_output=True,timeout=45)
             if result.returncode or 'PONG' not in result.stdout:raise RuntimeError('real signed native peer exchange failed: '+result.stderr[-500:])
         for source,target,port in pairs:exchange(source,target,port)
-        observations=[]
+        observations=[];content_identities=set()
         for index,node in enumerate(nodes):
             with urllib.request.urlopen('http://127.0.0.1:'+str(18185+index*1000)+'/api/gateway/sites',timeout=10) as response:sites=json.load(response)
             if not sites['configured'] or sites['default_resolver']!='node-zdns':raise RuntimeError('own-node ZDNS site resolution unavailable')
@@ -49,12 +49,18 @@ def main():
             if effort['network_id']!='ci-independent':raise RuntimeError('effort client network binding differs')
             with urllib.request.urlopen('http://127.0.0.1:'+str(18081+index*1000)+'/openci/v1/light/config',timeout=10) as response:light=json.load(response)
             if light['node_arch'] not in light['targets'] or light['cross_compile'] is not False:raise RuntimeError('own pinned native-architecture compiler unavailable')
+            content=deploy.probe_gateway_tool(Path(node['root']),'content_health')
+            if content.get('status')!='ok' or content['data'].get('schema')!='ziokt.content-health.v1':raise RuntimeError('own-node Content Fabric is unavailable through Gateway/MCP')
+            content_identities.add(content['data']['node'])
 
             if not json.loads(Path(node['consensus_hold']).read_text())['active']:raise RuntimeError('bootstrap must preserve unverified-history hold')
-            observations.append({'identity':node['native']['identity'],'genesis_hash':node['native']['genesis_hash'],'own_gateway':True,'own_zdns':True,'own_mcp':True,'own_openci':True,'own_effort':True,'own_compiler_admission':True,'unverified_history_consensus_held':True,'connectivity':node['connectivity']})
+            observations.append({'identity':node['native']['identity'],'genesis_hash':node['native']['genesis_hash'],'own_gateway':True,'own_zdns':True,'own_mcp':True,'own_openci':True,'own_effort':True,'own_content_fabric':True,'own_compiler_admission':True,'unverified_history_consensus_held':True,'connectivity':node['connectivity']})
+        if len(content_identities)!=3:raise RuntimeError('independent Content Fabric identities were not preserved')
         seed_units=[unit for unit in units if unit.startswith('ziokt-ci-seed-')]
         subprocess.run(['systemctl','stop',*seed_units],check=True,capture_output=True)
         exchange(nodes[1],nodes[2],17234);exchange(nodes[2],nodes[1],14234)
+        for node in nodes[1:]:
+            if deploy.probe_gateway_tool(Path(node['root']),'content_health').get('status')!='ok':raise RuntimeError('surviving node depends on seed content infrastructure')
         subprocess.run(['systemctl','restart',*seed_units],check=True,capture_output=True)
         for node in nodes:
             public=Path(node['corix_config']).parent/'identity.key.pub'
