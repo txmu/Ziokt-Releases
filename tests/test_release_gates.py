@@ -58,3 +58,29 @@ class OutboundNodeTests(unittest.TestCase):
     def test_public_mode_does_not_accept_private_address_as_public_reachability(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):deploy.bootstrap(Path(directory),connectivity='public',public_ip='192.168.1.8')
+
+class GatewayProbeTests(unittest.TestCase):
+    def test_probe_gateway_tool_unconfigured_without_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            isolated = Path(directory) / 'empty-node'
+            isolated.mkdir()
+            with patch.object(Path, 'home', return_value=Path(directory) / 'fake-home'):
+                res = deploy.probe_gateway_tool(isolated, 'corium_chain_state')
+                self.assertEqual(res['status'], 'unconfigured')
+
+    def test_probe_gateway_tool_dynamic_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            node_dir = Path(directory) / 'node'
+            cfg_dir = node_dir / 'config'
+            cfg_dir.mkdir(parents=True)
+            (cfg_dir / 'admin_token.key').write_text('secret-test-token\n')
+            (cfg_dir / 'gateway.json').write_text(json.dumps({'port': 9999}))
+            fake_response_data = {'structuredContent': {'height': 42, 'hash': 'fakehash'}}
+            class FakeResponse:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def read(self): return json.dumps(fake_response_data).encode()
+            with patch('urllib.request.urlopen', return_value=FakeResponse()):
+                res = deploy.probe_gateway_tool(node_dir, 'corium_chain_state')
+                self.assertEqual(res['status'], 'ok')
+                self.assertEqual(res['data']['height'], 42)

@@ -531,14 +531,108 @@ allowed_resources = *
     }
 
 
+def probe_gateway_tool(root, tool_name, arguments=None, timeout=5):
+    """Query local Gateway tools via admin token with dynamic non-hardcoded results."""
+    root = Path(root).expanduser().absolute()
+    token_candidates = [
+        root / 'config/admin_token.key',
+        root / 'admin_token.key',
+        Path.home() / '.local/share/ziokt-node/config/admin_token.key',
+        Path.home() / '.local/share/ziokt-production/config/admin_token.key',
+    ]
+    gateway_candidates = [
+        root / 'config/gateway.json',
+        root / 'gateway.json',
+        Path.home() / '.local/share/ziokt-node/config/gateway.json',
+        Path.home() / '.local/share/ziokt-production/config/gateway.json',
+    ]
+    gateway_port = 8185
+    for gpath in gateway_candidates:
+        if gpath.is_file() and not gpath.is_symlink():
+            try:
+                gdoc = json.loads(gpath.read_text())
+                gateway_port = int(gdoc.get('port', gateway_port))
+                if 'admin_token' in gdoc:
+                    token_candidates.insert(0, Path(gdoc['admin_token']))
+                break
+            except Exception:
+                pass
+
+    token = None
+    for tpath in token_candidates:
+        if tpath.is_file() and not tpath.is_symlink():
+            try:
+                cand = tpath.read_text().strip()
+                if cand:
+                    token = cand
+                    break
+            except Exception:
+                pass
+
+    if not token:
+        return {'status': 'unconfigured', 'detail': 'admin_token.key not found'}
+
+    url = f'http://127.0.0.1:{gateway_port}/api/gateway/tools/call'
+    payload = json.dumps({'name': tool_name, 'arguments': arguments or {}}).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'User-Agent': 'ziokt-deploy/1.0',
+        },
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            if isinstance(data, dict) and 'structuredContent' in data:
+                return {'status': 'ok', 'data': data['structuredContent']}
+            return {'status': 'ok', 'data': data}
+    except Exception as exc:
+        return {'status': 'unavailable', 'error': str(exc)}
+
+
 def status(root):
     result={'schema':'ziokt.manager-status.v1','platform':sys.platform,'architecture':platform.machine(),'installed':(root/'active.json').is_file(),'business_operational':'not_assessed','remote_verified':'not_assessed'}
     if result['installed']:result['release']=str(active(root))
+    services_to_probe = []
     if (root/'services.json').is_file():
-        result['services']=json.loads((root/'services.json').read_text())
-        for service in result['services']:
-            if sys.platform.startswith('linux'):
-                control=['systemctl']+([] if os.geteuid()==0 else ['--user']);probe=subprocess.run([*control,'is-active','ziokt-'+service],capture_output=True,text=True,timeout=5);result['services'][service]['process_active']=probe.returncode==0
+        try:
+            result['services']=json.loads((root/'services.json').read_text())
+            services_to_probe.extend(result['services'].keys())
+        except Exception:
+            result['services']={}
+    else:
+        result['services']={}
+        services_to_probe = ['corium-p2p','corium-consensus','corium-relayer','gateway','mcp','effort','openci','telegram-bot']
+    if sys.platform.startswith('linux'):
+        for service in services_to_probe:
+            name = service if service.startswith('ziokt-') else 'ziokt-'+service
+            active_flag = False
+            for cmd in (['systemctl','is-active',name], ['systemctl','--user','is-active',name]):
+                try:
+                    probe = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+                    if probe.returncode == 0 and probe.stdout.strip() == 'active':
+                        active_flag = True
+                        break
+                except Exception:
+                    pass
+            if service not in result['services']:
+                result['services'][service] = {'service': name}
+            result['services'][service]['process_active'] = active_flag
+
+    chain_probe = probe_gateway_tool(root, 'corium_chain_state')
+    result['chain_state'] = chain_probe
+
+    tunnel_probe = probe_gateway_tool(root, 'shadow6_companion_tunnel_status')
+    result['companion_tunnel'] = tunnel_probe
+
+    if chain_probe.get('status') == 'ok' and tunnel_probe.get('status') == 'ok':
+        result['business_operational'] = True
+    elif chain_probe.get('status') == 'unavailable' or tunnel_probe.get('status') == 'unavailable':
+        result['business_operational'] = False
     return result
 
 
@@ -549,7 +643,11 @@ def main():
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
     q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
     q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Advertised node IP; omit for outbound-only auto mode, or use --connectivity public to detect');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt');q.add_argument('--native-entrypoint',type=Path);q.add_argument('--native-sha256');q.add_argument('--genesis',type=Path);q.add_argument('--genesis-sha256');q.add_argument('--p2p-port',type=int,default=7234);q.add_argument('--gateway-port',type=int,default=8185);q.add_argument('--mcp-port',type=int,default=8186);q.add_argument('--openci-port',type=int,default=8768);q.add_argument('--dns-port',type=int,default=5353);q.add_argument('--doh-port',type=int,default=8188);q.add_argument('--seed-certificate',type=Path);q.add_argument('--seed-certificate-sha256');q.add_argument('--connectivity',choices=['auto','public','outbound'],default='auto');q.add_argument('--effort-port',type=int,default=8081)
-    sub.add_parser('status');sub.add_parser('rollback');a=p.parse_args();root=a.root.expanduser().absolute()
+    sub.add_parser('status');sub.add_parser('rollback')
+    sub.add_parser('chain-state');sub.add_parser('corium-chain-state')
+    sub.add_parser('companion-status');sub.add_parser('companion-tunnel')
+    q_call=sub.add_parser('call-tool');q_call.add_argument('name');q_call.add_argument('--arguments',default='{}')
+    a=p.parse_args();root=a.root.expanduser().absolute()
     if a.action == 'bootstrap':
         res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix,a.native_entrypoint,a.native_sha256,a.genesis,a.genesis_sha256,a.p2p_port,a.gateway_port,a.mcp_port,a.openci_port,a.dns_port,a.doh_port,a.seed_certificate,a.seed_certificate_sha256,a.connectivity,a.effort_port)
         print(json.dumps(res, ensure_ascii=False, indent=2))
@@ -591,6 +689,16 @@ def main():
         state=json.loads((root/'active.json').read_text());previous=state.get('previous')
         if not previous or Path(previous).parent.resolve()!=(root/'releases').resolve() or not Path(previous).is_dir():raise ValueError('previous retained release unavailable')
         write(root/'active.json',{'schema':state['schema'],'release':previous,'previous':state['release']});print(json.dumps({'state':'rolled_back','release':previous,'services_restarted':False}));return
+    if a.action in {'chain-state','corium-chain-state'}:
+        res=probe_gateway_tool(root,'corium_chain_state')
+        print(json.dumps(res,ensure_ascii=False,indent=2));return
+    if a.action in {'companion-status','companion-tunnel'}:
+        res=probe_gateway_tool(root,'shadow6_companion_tunnel_status')
+        print(json.dumps(res,ensure_ascii=False,indent=2));return
+    if a.action=='call-tool':
+        args_obj=json.loads(a.arguments) if isinstance(a.arguments,str) else {}
+        res=probe_gateway_tool(root,a.name,args_obj)
+        print(json.dumps(res,ensure_ascii=False,indent=2));return
     print(json.dumps(status(root),ensure_ascii=False,indent=2))
 
 if __name__=='__main__':
