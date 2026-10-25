@@ -17,4 +17,4 @@ import hashlib,pathlib,sys
 root=pathlib.Path(sys.argv[1]);expected=(root/'deploy.py.sha256').read_text().split()[0]
 if hashlib.sha256((root/'deploy.py').read_bytes()).hexdigest()!=expected:raise SystemExit('Installer checksum mismatch')
 PY
-exec python3 "$work/deploy.py" "$@"
+python3 "$work/deploy.py" "$@"

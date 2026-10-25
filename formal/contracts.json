@@ -1,0 +1,68 @@
+{
+  "schema": "ziokt.guard-contracts.v1",
+  "python_target": "deploy.py",
+  "predicates": {
+    "ci_success": {
+      "parameters": {
+        "status": "String",
+        "conclusion": "String"
+      },
+      "expression": [
+        "and",
+        [
+          "eq",
+          [
+            "var",
+            "status"
+          ],
+          [
+            "str",
+            "completed"
+          ]
+        ],
+        [
+          "eq",
+          [
+            "var",
+            "conclusion"
+          ],
+          [
+            "str",
+            "success"
+          ]
+        ]
+      ],
+      "lean_targets": [
+        "formal/Release.lean"
+      ],
+      "production_bindings": [
+        "tools/publish.py"
+      ],
+      "binding_scope": "production predicate"
+    },
+    "same_revision": {
+      "parameters": {
+        "source": "String",
+        "compiler": "String"
+      },
+      "expression": [
+        "eq",
+        [
+          "var",
+          "source"
+        ],
+        [
+          "var",
+          "compiler"
+        ]
+      ],
+      "lean_targets": [
+        "formal/Release.lean"
+      ],
+      "production_bindings": [
+        "deploy.py"
+      ],
+      "binding_scope": "production predicate"
+    }
+  }
+}

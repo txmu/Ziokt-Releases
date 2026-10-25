@@ -27,6 +27,26 @@ import xml.etree.ElementTree as ET
 REPOSITORY='txmu/Ziokt-Releases'
 SERVICES={'gateway':('ziokt.pyz',['gateway','serve']),'mcp':('ziokt.pyz',['mcp','serve']),'content':('ziokt.pyz',[]),'effort':('ziokt.pyz',['effort-web']),'openci':('openci.pyz',[])}
 
+# BEGIN GENERATED VERIFIED GUARDS
+def _contract_argument(value, kind):
+    valid = (type(value) is int and value >= 0) if kind == "Nat" else type(value) is bool if kind == "Bool" else type(value) is str if kind == "String" else type(value) is list and all(type(item) is bool for item in value)
+    if not valid: raise ValueError("verified guard argument outside its proved domain: " + kind)
+
+
+def ci_success(status, conclusion):
+    _contract_argument(status, 'String')
+    _contract_argument(conclusion, 'String')
+    return ((status == "completed") and (conclusion == "success"))
+
+
+def same_revision(source, compiler):
+    _contract_argument(source, 'String')
+    _contract_argument(compiler, 'String')
+    return (source == compiler)
+
+
+# END GENERATED VERIFIED GUARDS
+
 
 def sha(path):
     value=hashlib.sha256()
@@ -48,6 +68,14 @@ def opener(proxy=None):
         value=urlsplit(proxy)
         if value.scheme not in {'http','https'} or not value.hostname:raise ValueError('HTTP/HTTPS CONNECT proxy URL required')
     return urllib.request.build_opener(urllib.request.ProxyHandler({'http':proxy,'https':proxy} if proxy else {}))
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args,**kwargs):return None
+
+
+def local_opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
 
 def fetch(url,destination,expected=None,limit=2*1024**3,proxy=None):
     parsed=urlsplit(url)
@@ -90,6 +118,23 @@ def plan(catalog_value,selection,include=(),exclude=()):
     if not chosen:raise ValueError('no matching product files; inspect the catalog IDs and platform first')
     result={'schema':'ziokt.install-plan.v1','artifacts':chosen,'download_bytes':sum(a['bytes'] for a in chosen),'platform':platform.system().lower(),'architecture':platform.machine(),'consensus_changed':False}
     result['sha256']=hashlib.sha256(json.dumps(result,sort_keys=True,separators=(',',':')).encode()).hexdigest();return result
+
+
+def profile_plan(repository=REPOSITORY,profile='gateway',selection=(),include=(),exclude=(),proxy=None,expected=None):
+    with tempfile.TemporaryDirectory(prefix='ziokt-plan-') as temporary:
+        inventory=catalog(repository,Path(temporary),proxy,expected)
+        selected=list(selection)
+        if not selected:
+            if profile in {'gateway','openci'}:
+                native=next((item for item in inventory['artifacts'] if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts'),None)
+                if native is None:raise ValueError('green native bundle unavailable')
+                compiler='txmu/Ziokt/openci-light-compiler-'+native['source_revision']
+                if not any(item['id']==compiler and same_revision(native['source_revision'],item.get('source_revision','')) for item in inventory['artifacts']):raise ValueError('matching green lightweight compiler bundle unavailable')
+                selected=[native['id'],compiler]
+            elif profile=='portable':
+                selected=['txmu/Ziokt/ziokt-'+('windows-latest' if os.name=='nt' else 'macos-latest' if sys.platform=='darwin' else 'ubuntu-24.04')]
+            else:raise ValueError('choose --profile or explicit --artifact selectors')
+        return plan(inventory,selected,include,exclude)
 
 
 def unpack(path,destination,members):
@@ -194,15 +239,14 @@ def preflight(root, repo=REPOSITORY, proxy=None):
         checks.append({'name': name, 'passed': passed, 'detail': detail})
         return passed
     all_pass = True
-    all_pass &= record('python_version', sys.version_info >= (3, 10), f'python {sys.version.split()[0]} (>= 3.10)')
+    all_pass &= record('python_version', sys.version_info >= (3, 11), f'python {sys.version.split()[0]} (>= 3.11)')
     all_pass &= record('platform_supported', sys.platform in {'linux', 'darwin', 'win32'}, sys.platform)
     arch = platform.machine().lower()
     all_pass &= record('architecture_supported', arch in {'x86_64', 'amd64', 'aarch64', 'arm64'}, arch)
     try:
         if root.is_symlink(): raise ValueError('root cannot be a symlink')
         root.mkdir(parents=True, exist_ok=True)
-        probe = root / '.preflight-probe'
-        probe.write_text('ok'); probe.unlink()
+        with tempfile.NamedTemporaryFile(prefix='.preflight-',dir=root) as probe:probe.write(b'ok')
         writable = True
     except Exception as e:
         writable = False
@@ -389,6 +433,13 @@ allowed_resources = *
         if sys.platform!='linux':raise ValueError('native node initialization currently requires GNU/Linux')
         target=corium_dir/'bin/corix_v108.sh';target.parent.mkdir(mode=0o700)
         shutil.copyfile(native,target);target.chmod(0o500)
+        if enable_services:
+            for name in ('consensus_hold.py','consensus_core.py','verify_mainnet_history.py','audit_history_provenance.py',
+                         'recovery_transition_plan.py','sovereign_status.py','recovery_consensus.py',
+                         'work_consensus.py','work_weight_policy.py','work_weight_native.py','openci_consensus.py',
+                         'dna_protocol.py','cooperative_protocol.py','shielded_ownership.py'):
+                source=executable(root,name)
+                shutil.copyfile(source,target.parent/name);(target.parent/name).chmod(0o400)
         if genesis is not None:
             shutil.copyfile(genesis,corix_conf.parent/'genesis.json');(corix_conf.parent/'genesis.json').chmod(0o600)
         env=dict(os.environ,CORIUM_ROOT=str(corium_dir),CORIUM_NETWORK_ID_OVERRIDE=network,PYTHON_CMD=python_executable(root),PATH=str(Path(python_executable(root)).parent)+os.pathsep+os.environ.get('PATH',os.defpath))
@@ -478,10 +529,16 @@ allowed_resources = *
     if native_receipt:
         write(effort_file,{'schema':'ziokt.effort-web.v1','origin':'http://127.0.0.1:'+str(effort_port),'listen':'127.0.0.1','port':effort_port,'federation_config':str(federation),'provider':'corium-node','network_id':network,'submitter':native_receipt['identity'],'state_root':str(root/'state/effort'),'explorer':True,'openci_endpoint':'http://127.0.0.1:'+str(openci_port)})
     services_enabled = []
+    service_records={}
+    def start_service(svc,argv,suffix=None):
+        name=service_prefix+'-'+(suffix or svc)
+        definition=persist(root,svc,argv,name)
+        service_records[svc]={'service':name,'definition':definition,'command':argv,'business_operational':'not_assessed'}
+        write(root/'services.json',service_records)
+        services_enabled.append(svc)
     if enable_services and (root / 'active.json').exists():
         if not native_receipt:raise ValueError('initialized native state required before enabling node services')
-        persist(root,'corium-p2p',['bash',str(root/'native-service.sh'),'p2p'],service_prefix+'-corium-p2p')
-        services_enabled.append('corium-p2p')
+        start_service('corium-p2p',['bash',str(root/'native-service.sh'),'p2p'])
         openci_binary=executable(root,'openci.pyz')
         subprocess.run([python_executable(root),str(openci_binary),'--root',str(openci_dir),'init'],check=True,capture_output=True,timeout=30)
         controller_config=openci_dir/'controller.json';doc=json.loads(controller_config.read_text());doc.update(public_origin='http://127.0.0.1:'+str(openci_port),public_origins=['http://127.0.0.1:'+str(effort_port)]);write(controller_config,doc)
@@ -494,8 +551,7 @@ allowed_resources = *
             try:
                 cfg = gateway_file if svc == 'gateway' else mcp_file if svc == 'mcp' else effort_file if svc=='effort' else None
                 argv = command(root, svc, cfg,port=openci_port)
-                persist(root, svc, argv,service_prefix+'-'+svc)
-                services_enabled.append(svc)
+                start_service(svc,argv)
             except Exception as error:
                 raise RuntimeError('service activation failed: '+svc+'; configuration preserved for review') from error
 
@@ -534,34 +590,31 @@ allowed_resources = *
 def probe_gateway_tool(root, tool_name, arguments=None, timeout=5):
     """Query local Gateway tools via admin token with dynamic non-hardcoded results."""
     root = Path(root).expanduser().absolute()
-    token_candidates = [
-        root / 'config/admin_token.key',
-        root / 'admin_token.key',
-        Path.home() / '.local/share/ziokt-node/config/admin_token.key',
-        Path.home() / '.local/share/ziokt-production/config/admin_token.key',
-    ]
+    token_candidates = [root / 'config/admin_token.key', root / 'admin_token.key']
     gateway_candidates = [
         root / 'config/gateway.json',
         root / 'gateway.json',
-        Path.home() / '.local/share/ziokt-node/config/gateway.json',
-        Path.home() / '.local/share/ziokt-production/config/gateway.json',
     ]
-    gateway_port = 8185
+    gateway_port = None
     for gpath in gateway_candidates:
         if gpath.is_file() and not gpath.is_symlink():
             try:
                 gdoc = json.loads(gpath.read_text())
-                gateway_port = int(gdoc.get('port', gateway_port))
+                gateway_port = gdoc.get('port',8185)
+                if type(gateway_port) is not int or not 1<=gateway_port<=65535:raise ValueError('bounded gateway port required')
                 if 'admin_token' in gdoc:
                     token_candidates.insert(0, Path(gdoc['admin_token']))
                 break
-            except Exception:
-                pass
+            except (OSError,ValueError,TypeError):
+                return {'status':'unconfigured','detail':'invalid Gateway configuration for this node'}
+
+    if gateway_port is None:return {'status':'unconfigured','detail':'Gateway configuration not found in this node root'}
 
     token = None
     for tpath in token_candidates:
-        if tpath.is_file() and not tpath.is_symlink():
+        if tpath.is_file() and not tpath.is_symlink() and tpath.resolve().is_relative_to(root.resolve()):
             try:
+                if os.name!='nt' and (tpath.stat().st_mode&0o077 or tpath.stat().st_uid!=os.getuid()):continue
                 cand = tpath.read_text().strip()
                 if cand:
                     token = cand
@@ -585,8 +638,12 @@ def probe_gateway_tool(root, tool_name, arguments=None, timeout=5):
         method='POST',
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
+        with local_opener().open(req, timeout=timeout) as resp:
+            raw=resp.read(2*1024*1024+1)
+            if len(raw)>2*1024*1024:raise ValueError('Gateway response exceeds budget')
+            data = json.loads(raw.decode('utf-8'))
+            if not isinstance(data,dict) or data.get('isError') is True or 'error' in data:
+                return {'status':'unavailable','error':'Gateway tool returned an error'}
             if isinstance(data, dict) and 'structuredContent' in data:
                 return {'status': 'ok', 'data': data['structuredContent']}
             return {'status': 'ok', 'data': data}
@@ -609,7 +666,7 @@ def status(root):
         services_to_probe = ['corium-p2p','corium-consensus','corium-relayer','gateway','mcp','effort','openci','telegram-bot']
     if sys.platform.startswith('linux'):
         for service in services_to_probe:
-            name = service if service.startswith('ziokt-') else 'ziokt-'+service
+            name=result['services'].get(service,{}).get('service') or (service if service.startswith('ziokt-') else 'ziokt-'+service)
             active_flag = False
             for cmd in (['systemctl','is-active',name], ['systemctl','--user','is-active',name]):
                 try:
@@ -629,9 +686,8 @@ def status(root):
     tunnel_probe = probe_gateway_tool(root, 'shadow6_companion_tunnel_status')
     result['companion_tunnel'] = tunnel_probe
 
-    if chain_probe.get('status') == 'ok' and tunnel_probe.get('status') == 'ok':
-        result['business_operational'] = True
-    elif chain_probe.get('status') == 'unavailable' or tunnel_probe.get('status') == 'unavailable':
+    result['local_tools_responding']=chain_probe.get('status')=='ok' and tunnel_probe.get('status')=='ok'
+    if chain_probe.get('status') == 'unavailable' or tunnel_probe.get('status') == 'unavailable':
         result['business_operational'] = False
     return result
 
@@ -643,12 +699,22 @@ def main():
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
     q=sub.add_parser('preflight');q.add_argument('--repository',default=REPOSITORY);q.add_argument('--proxy')
     q=sub.add_parser('bootstrap');q.add_argument('--network',default='ziokt-main');q.add_argument('--public-ip',help='Advertised node IP; omit for outbound-only auto mode, or use --connectivity public to detect');q.add_argument('--seed-peer',default=None,help='Seed peer endpoint (<host>:<port>) to connect to. No default.');q.add_argument('--gateway-peer',default=None,help='Gateway peer URL (http://<host>:<port>) to connect to. No default.');q.add_argument('--proxy');q.add_argument('--enable-services',action='store_true');q.add_argument('--service-prefix',default='ziokt');q.add_argument('--native-entrypoint',type=Path);q.add_argument('--native-sha256');q.add_argument('--genesis',type=Path);q.add_argument('--genesis-sha256');q.add_argument('--p2p-port',type=int,default=7234);q.add_argument('--gateway-port',type=int,default=8185);q.add_argument('--mcp-port',type=int,default=8186);q.add_argument('--openci-port',type=int,default=8768);q.add_argument('--dns-port',type=int,default=5353);q.add_argument('--doh-port',type=int,default=8188);q.add_argument('--seed-certificate',type=Path);q.add_argument('--seed-certificate-sha256');q.add_argument('--connectivity',choices=['auto','public','outbound'],default='auto');q.add_argument('--effort-port',type=int,default=8081)
+    q.add_argument('--install',action='store_true',help='Install matching green native and compiler bundles before initializing this node')
+    q.add_argument('--runtime',action='store_true',help='Prepare the private Python runtime using binary wheels only')
+    q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--yes',action='store_true');q.add_argument('--confirm')
     sub.add_parser('status');sub.add_parser('rollback')
     sub.add_parser('chain-state');sub.add_parser('corium-chain-state')
     sub.add_parser('companion-status');sub.add_parser('companion-tunnel')
     q_call=sub.add_parser('call-tool');q_call.add_argument('name');q_call.add_argument('--arguments',default='{}')
     a=p.parse_args();root=a.root.expanduser().absolute()
     if a.action == 'bootstrap':
+        if a.install:
+            pf=preflight(root,a.repository,a.proxy)
+            if not pf['overall_pass']:raise ValueError('Preflight check failed: '+json.dumps(pf['checks']))
+            approved=profile_plan(a.repository,proxy=a.proxy,expected=a.catalog_sha256)
+            if not a.yes and a.confirm!=approved['sha256']:raise ValueError('inspect the gateway installation plan and supply --confirm SHA256, or explicitly use --yes')
+            install(root,approved,a.proxy)
+        if a.runtime:runtime(root,a.proxy)
         res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix,a.native_entrypoint,a.native_sha256,a.genesis,a.genesis_sha256,a.p2p_port,a.gateway_port,a.mcp_port,a.openci_port,a.dns_port,a.doh_port,a.seed_certificate,a.seed_certificate_sha256,a.connectivity,a.effort_port)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return
@@ -662,17 +728,7 @@ def main():
             pf = preflight(root, a.repository, a.proxy)
             if not pf['overall_pass']:
                 raise ValueError('Preflight check failed: ' + json.dumps([c for c in pf['checks'] if not c['passed']], ensure_ascii=False))
-        with tempfile.TemporaryDirectory(prefix='ziokt-plan-') as temporary:
-            selection=a.artifact or (['txmu/Ziokt/ziokt-enabled-native-artifacts'] if a.profile in {'gateway','openci'} else ['txmu/Ziokt/ziokt-'+('windows-latest' if os.name=='nt' else 'macos-latest' if sys.platform=='darwin' else 'ubuntu-24.04')] if a.profile=='portable' else [])
-            if not selection:p.error('choose --profile or explicit --artifact selectors')
-            inventory=catalog(a.repository,Path(temporary),a.proxy,a.catalog_sha256)
-            if not a.artifact and a.profile in {'gateway','openci'}:
-                native=next((item for item in inventory['artifacts'] if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts'),None)
-                if native is None:raise ValueError('green native bundle unavailable')
-                compiler='txmu/Ziokt/openci-light-compiler-'+native['source_revision']
-                if not any(item['id']==compiler for item in inventory['artifacts']):raise ValueError('matching green lightweight compiler bundle unavailable')
-                selection.append(compiler)
-            approved=plan(inventory,selection,a.include,a.exclude)
+        approved=profile_plan(a.repository,a.profile,a.artifact,a.include,a.exclude,a.proxy,a.catalog_sha256)
         if a.action=='plan':print(json.dumps(approved,ensure_ascii=False,indent=2));return
         if not a.yes and a.confirm!=approved['sha256']:raise ValueError('inspect the plan and supply --confirm SHA256, or explicitly use --yes')
         result=install(root,approved,a.proxy)

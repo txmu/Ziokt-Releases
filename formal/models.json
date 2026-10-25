@@ -1,0 +1,18 @@
+{
+  "schema": "ziokt.formal-models.v1",
+  "scope": "Abstract publication and source/compiler admission gates; no implementation refinement claim.",
+  "models": {
+    "Release.lean": {
+      "namespace": "Ziokt.Release",
+      "source_sha256": {
+        "deploy.py": "f777e0df374f3ec59a9b4fac234e6f2c278cf31611f218575a3d6f238d53cd4f",
+        "tools/publish.py": "c3b76b57a91a472c8fc955c654a9bbb0fa6b337b250ad895b47608a84c8c0d16",
+        "formal/contracts.json": "04831f4226467f7ca225f1730538889aa4b6cab5ab721783bc4844bb9af809be",
+        "formal/generate_guards.py": "da17dd6bbda8cf4c00e01e7e8ca4e91e0c8e8ba16b1634b1932ebbd954f7747b"
+      },
+      "regressions": [
+        "tests/test_release_gates.py"
+      ]
+    }
+  }
+}

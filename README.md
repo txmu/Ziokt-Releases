@@ -22,7 +22,7 @@ All installers and client packages are hosted on the `txmu/Ziokt-Releases` GitHu
 curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- preflight
 
 # 配置新节点（端点显式指定；不会复制本机身份或自动放行共识）：
-curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- bootstrap --seed-peer 13.193.103.220:7234 --gateway-peer http://13.193.103.220:8080
+curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- bootstrap --seed-peer "$SEED_HOST:$SEED_PORT" --gateway-peer "$SEED_GATEWAY"
 
 # 或生成独立节点配置（不配置远端种子）：
 curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- bootstrap
@@ -46,7 +46,7 @@ python3 deploy.py preflight [--root /path/to/install]
 ```
 
 Checks verified:
-- Python runtime version (`>= 3.10`)
+- Python runtime version (`>= 3.11`)
 - Operating system platform (`linux`, `darwin`, `win32`)
 - Host CPU architecture (`x86_64`, `amd64`, `aarch64`, `arm64`)
 - Target installation root directory writability and non-symlink safety
@@ -65,6 +65,10 @@ The collector examines trusted owner push/manual/scheduled/release events and ne
 Release 自动收集器只发布成功的 owner CI，并检查相同源码 revision 的全部工作流通过；已知失败产物不进入下载目录或安装计划。
 
 ### 独立原生节点与 CI 部署验收
+
+Ubuntu 24.04 VPS 的完整依赖、单条 curl 安装并初始化/启动、接入已有网络、端口、
+安全锁与验收步骤见 [VPS 建节点教程](VPS_BOOTSTRAP.zh-CN.md)。`bootstrap --install
+--runtime --yes --enable-services` 会安装精确匹配的 green 原生与编译器包后执行初始化。
 
 安装全部通过 CI 的 `--profile gateway` bundle 后，`bootstrap --enable-services` 从该 bundle 的 `corix-ziokt.sh` 初始化真实 Corium 状态、该节点自己的密钥、Gateway、节点 ZDNS、MCP 和 OpenCI。原生配置位于实际 `corium/etc/corix/networks/<network>/corix.conf`，不再写入原生运行时不会读取的位置。所有路径由 --root 派生；--service-prefix、P2P/Gateway/MCP/OpenCI/DNS/DoH 端口可显式配置，不复用生产机器的身份或服务权限。没有配置种子时不连接隐式种子。
 

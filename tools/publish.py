@@ -14,7 +14,10 @@ import subprocess
 import tempfile
 import zipfile
 from urllib.parse import quote
+import sys
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+from deploy import ci_success
 HUB=os.environ.get('ZIOKT_RELEASE_REPO','txmu/Ziokt-Releases')
 
 
@@ -66,7 +69,7 @@ def verified_commit(repository,revision):
         if len(data['workflow_runs'])<100:break
         page+=1
         if page>10:raise ValueError('commit check inventory exceeds budget')
-    if not latest or any(run['status']!='completed' or run['conclusion']!='success' for run in latest.values()):
+    if not latest or any(not ci_success(run['status'],run['conclusion'] or '') for run in latest.values()):
         raise ValueError('all workflows for the exact source revision must pass before publication')
     return sorted(run['html_url'] for run in latest.values())
 
@@ -75,7 +78,7 @@ def publish_run(repository,run_id,directory):
     source=next((s for s in json.loads((ROOT/'sources.json').read_text())['sources'] if s['repository']==repository),None)
     if not source:raise ValueError('source repository is not approved')
     run=api(f'repos/{repository}/actions/runs/{int(run_id)}')
-    if run['status']!='completed' or run['event'] not in {'push','workflow_dispatch','schedule','release'} or run['head_repository']['full_name']!=repository:
+    if not ci_success(run['status'],run['conclusion'] or '') or run['event'] not in {'push','workflow_dispatch','schedule','release'} or run['head_repository']['full_name']!=repository:
         raise ValueError('only completed trusted owner build events may publish')
     if run['conclusion']!='success':raise ValueError('failed or cancelled builds cannot publish artifacts')
     checks=verified_commit(repository,run['head_sha'])
