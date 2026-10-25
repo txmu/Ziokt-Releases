@@ -384,7 +384,7 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
     seed_line = f"seed_peers = {seed_peer}\n" if seed_peer else "seed_peers = \n"
     corix_conf = corium_dir / 'etc/corix/networks' / network / 'corix.conf'
     if corix_conf.exists() or corix_conf.is_symlink():raise ValueError('existing native configuration retained')
-    corix_conf.parent.mkdir(parents=True,mode=0o700)
+    corix_conf.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
     corix_content = f"""[main]
 dep_mode = manual
 build_jobs = 1

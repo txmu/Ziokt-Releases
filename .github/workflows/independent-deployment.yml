@@ -43,5 +43,8 @@ jobs:
         if: always()
         with:
           name: ziokt-independent-node-acceptance
-          path: ${{ runner.temp }}/independent-node-acceptance/acceptance.json
+          path: |
+            ${{ runner.temp }}/independent-node-acceptance/acceptance.json
+            ${{ runner.temp }}/independent-node-acceptance/validator-contributions.json
+            ${{ runner.temp }}/independent-node-acceptance/verified-acceptance-genesis.json
           if-no-files-found: error
