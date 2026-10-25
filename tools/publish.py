@@ -81,6 +81,7 @@ def publish_run(repository,run_id,directory):
     if not ci_success(run['status'],run['conclusion'] or '') or run['event'] not in {'push','workflow_dispatch','schedule','release'} or run['head_repository']['full_name']!=repository:
         raise ValueError('only completed trusted owner build events may publish')
     if run['conclusion']!='success':raise ValueError('failed or cancelled builds cannot publish artifacts')
+    if run.get('head_branch') not in source.get('branches',['main']):raise ValueError('only approved release branches may update the installation catalog')
     checks=verified_commit(repository,run['head_sha'])
     artifacts=api(f'repos/{repository}/actions/runs/{int(run_id)}/artifacts?per_page=100')['artifacts']
     filters=json.loads((ROOT/'sources.json').read_text())['exclude_fragments']

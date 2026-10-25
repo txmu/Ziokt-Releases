@@ -36,6 +36,11 @@ class GateTests(unittest.TestCase):
         item={'id':'test/artifact','kind':'github-actions-artifact-zip','source_run_conclusion':'failure'}
         with self.assertRaises(ValueError):deploy.plan({'artifacts':[item]},['test/*'])
 
+    def test_unreviewed_dependency_branches_cannot_replace_release_artifacts(self):
+        run={'status':'completed','event':'push','head_repository':{'full_name':'txmu/Ziokt'},'conclusion':'success','head_branch':'dependabot/proposed-change','head_sha':'a'*40}
+        with tempfile.TemporaryDirectory() as directory,patch.object(publisher,'api',return_value=run),patch.object(publisher,'verified_commit',side_effect=AssertionError('branch must be rejected before collection')):
+            with self.assertRaisesRegex(ValueError,'approved release branches'):publisher.publish_run('txmu/Ziokt',1,Path(directory))
+
 class IndependentNodeInputTests(unittest.TestCase):
     def test_root_links_port_collisions_and_unpinned_native_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
