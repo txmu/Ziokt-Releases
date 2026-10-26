@@ -62,3 +62,13 @@ curl -fsS http://127.0.0.1:8081/openci/v1/light/config
 多节点验收应记录每个身份和相同创世，进行真实双向通信、种子停机后的存活节点
 互通、重启保持身份、竞争分叉拒绝/接纳、检查点边界及冷恢复。CI 的三个独立根目录
 测试不代替多台 VPS 的独立物理故障域与运营商条件。
+
+## 本轮 GIMPS / RetroShare 更新
+
+GIMPS 验证模块随原生运行时一起交付；默认本地指数上限 100000、内存估算上限 256 MiB。可在独立节点 `config/effort-web.json` 中设置 `max_native_exponent`、`max_memory_mb` 后重启自己的 effort 服务。原生节点可设置 `CORIUM_GIMPS_MAX_EXPONENT`、`CORIUM_GIMPS_MAX_MEMORY_MB`；提交方自报 mprime/prime95 不会放宽验证资源限制。
+
+重启 Gateway/奋斗服务会恢复本机有效租约和检查点。每个独立节点使用不同根目录、服务前缀、私钥和端口；不要把一个运行中的 SQLite 状态目录当作跨机排他租约服务。
+
+RetroShare 采用显式配置的原生 loopback JSON API，MCP/Gateway/TG 共用 `retroshare_status`、`retroshare_friends`、`retroshare_online`、`retroshare_shares`、`retroshare_downloads`。默认未配置；详见 Ziokt `docs/RETROSHARE.md`。现有好友信任由 RetroShare 管理，不自动扩大信任或共享目录。
+
+源码包发布与 CI 编译产物目录分别记录。新源码已经发布时，远端 CI 可继续测试；使用 `bootstrap --install` 前仍应核对目录中所选产物的 source_revision，不把旧产物当作本轮新运行时。
