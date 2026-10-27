@@ -94,3 +94,9 @@ python3 deploy.py --root "$NODE_ROOT" bootstrap \
 协调器、应用和 OpenCI 服务采用 Python 便携包，安装管理器支持 Linux/systemd、macOS/launchd 和 Windows/任务计划；Windows 与 Android 奋斗端有各自 CI。完整 Corium 原生脚本依赖 GNU/Linux 与其运行依赖，因此 Windows 完整原生节点应在 WSL2/Linux VM 中运行，macOS 使用 Linux VM；管理器会明确拒绝把未验证的原生运行方式冒充该操作系统的完整节点。轻量编译当前严格支持 x86_64/aarch64，设备必须匹配所连节点，其他架构不能伪装领取。更多架构只有在实际构建和运行验收后才进入可用矩阵。
 
 gateway/openci 安装 profile 同时选择与原生协调器精确 revision 匹配、且全部通过 CI 的轻量 WASM 编译器 bundle，避免混装工具链。bootstrap 为每个节点配置自己的奋斗服务与本机 OpenCI 路径挂载；Windows/Android 和网页从所选节点读取 network_id 并绑定任务，不再把某个固定网络 ID 当作节点特权。公开下载地址可在奋斗配置的 downloads.android/windows 中显式指定；默认仅链接源码发布目录，不借用另一台生产机器的运行时接口。
+
+### Verified independent deployment
+
+The latest native catalogue entry is published only after CI and Lean checks pass for the exact locked Ziokt, Corium and Shadow6 revisions. Deployment verifies the complete native contract and every file digest before activation, including ziokt.pyz, openci.pyz, corix_v108.sh and the GIMPS runtime. Incomplete or unverified native entries cannot become the default native release. CI can finish after a source release; pending source revisions are not advertised as verified binary releases.
+
+The native runtime also carries deploy_dna_sidechain.py. Independent DNA nodes can use --recovery-file with the public signed recovery declaration; they do not need the originating authority private key. DNA uses a separate data root and an explicitly trusted legacy checkpoint.

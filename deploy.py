@@ -113,7 +113,9 @@ def plan(catalog_value,selection,include=(),exclude=()):
         if not any(fnmatch.fnmatchcase(item['id'],pattern) for pattern in selection):continue
         if item.get('kind')=='github-actions-artifact-zip' and (item.get('source_run_conclusion')!='success' or item.get('all_revision_workflows_passed') is not True):raise ValueError('only successful CI artifacts may be installed')
         if not re.fullmatch('[a-f0-9]{64}',item['sha256']) or not 0<item['bytes']<=2*1024**3:raise ValueError('artifact integrity declaration invalid')
+        if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts':native_bundle(item)
         files=[f for f in item.get('files',[]) if (not include or any(fnmatch.fnmatchcase(f['path'],p) for p in include)) and not any(fnmatch.fnmatchcase(f['path'],p) for p in exclude)]
+        if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts' and len(files)!=len(item.get('files',[])):raise ValueError('complete native deployment bundle cannot be filtered')
         if files:chosen.append({**item,'selected_files':files})
     if not chosen:raise ValueError('no matching product files; inspect the catalog IDs and platform first')
     result={'schema':'ziokt.install-plan.v1','artifacts':chosen,'download_bytes':sum(a['bytes'] for a in chosen),'platform':platform.system().lower(),'architecture':platform.machine(),'consensus_changed':False}
@@ -135,6 +137,20 @@ def profile_plan(repository=REPOSITORY,profile='gateway',selection=(),include=()
                 selected=['txmu/Ziokt/ziokt-'+('windows-latest' if os.name=='nt' else 'macos-latest' if sys.platform=='darwin' else 'ubuntu-24.04')]
             else:raise ValueError('choose --profile or explicit --artifact selectors')
         return plan(inventory,selected,include,exclude)
+
+
+def installed_native(area,item):
+    contract=list(area.rglob('native-release.json'))
+    if len(contract)!=1:raise ValueError('native release contract missing')
+    value=json.loads(contract[0].read_text())
+    if value.get('schema')!='ziokt.native-release.v1' or value.get('source_revision')!=item['source_revision'] or value.get('native_sources')!=item['formal_verification']['native_sources']:raise ValueError('native release source identity mismatch')
+    for name,evidence in value.get('required_files',{}).items():
+        path=PurePosixPath(name)
+        if path.is_absolute() or '..' in path.parts or chr(92) in name:raise ValueError('native contract path')
+        file=contract[0].parent.joinpath(*path.parts)
+        if not file.is_file() or file.is_symlink() or file.stat().st_size!=evidence['bytes'] or sha(file)!=evidence['sha256']:raise ValueError('native module digest mismatch')
+    expected={'ziokt.pyz','openci.pyz','corix_v108.sh','corium-runtime/gimps_consensus.py','corium-runtime/cooperative_consensus.py','corium-runtime/cooperative_protocol.py'}
+    if not expected<=set(value.get('required_files',{})):raise ValueError('native release contract incomplete')
 
 
 def unpack(path,destination,members):
@@ -166,8 +182,11 @@ def install(root,approved,proxy=None):
             for item in approved['artifacts']:
                 archive=stage/(item['sha256']+'.zip');fetch(item['url'],archive,item['sha256'],item['bytes']+1024,proxy)
                 area=files/item['sha256'];area.mkdir();unpack(archive,area,item['selected_files'])
+                if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts':installed_native(area,item)
             write(files/'install-manifest.json',approved)
             os.replace(files,release)
+    for item in approved['artifacts']:
+        if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts':installed_native(release/item['sha256'],item)
     current=root/'active.json';previous=json.loads(current.read_text()) if current.exists() else None
     write(current,{'schema':'ziokt.active-install.v1','release':str(release),'plan_sha256':approved['sha256'],'previous':previous['release'] if previous else None})
     return {'state':'installed','release':str(release),'files':sum(len(i['selected_files']) for i in approved['artifacts']),'services_enabled':False,'consensus_changed':False}
@@ -279,6 +298,20 @@ def preflight(root, repo=REPOSITORY, proxy=None):
     return result
 
 
+def native_bundle(item):
+    assurance=item.get('formal_verification',{})
+    if (assurance.get('schema')!='ziokt.native-release-assurance.v1' or assurance.get('source_revision')!=item.get('source_revision')
+        or set(assurance.get('formal_workflows',{}))!={'txmu/Ziokt','txmu/Corium','txmu/Shadow6'}):raise ValueError('exact native source and formal verification evidence required')
+    for repo,url in assurance['formal_workflows'].items():
+        if type(url)is not str or not re.fullmatch('https://github.com/'+re.escape(repo)+r'/actions/runs/[0-9]+',url):raise ValueError('invalid formal verification workflow evidence')
+        runs=assurance.get('revision_workflows',{}).get(repo)
+        if type(runs)is not list or not runs or any(type(r)is not str or not r.startswith('https://github.com/'+repo+'/actions/runs/') for r in runs):raise ValueError('all native revision workflow evidence required')
+    required={'ziokt.pyz','openci.pyz','corix_v108.sh','gimps_consensus.py','cooperative_consensus.py','cooperative_protocol.py','native-release.json'}
+    paths=[PurePosixPath(f['path']).name for f in item.get('files',[])]
+    if any(paths.count(name)!=1 for name in required):raise ValueError('complete independent deployment binaries and native modules required')
+    if not all(re.fullmatch('[a-f0-9]{40}',v.get('revision','')) for v in assurance.get('native_sources',{}).values()) or set(assurance.get('native_sources',{}))!={'corium','shadow6'}:raise ValueError('native source revision evidence required')
+
+
 def detect_public_ip(proxy=None):
     """Auto-detect host public egress IPv4/IPv6 address via standard providers."""
     import ipaddress
@@ -328,7 +361,7 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
         if native.is_symlink() or not native.is_file() or not re.fullmatch('[a-f0-9]{64}',str(native_sha256)) or sha(native)!=native_sha256:raise ValueError('explicit checksum-pinned native entrypoint required')
         subprocess.run(['bash','-n',str(native)],check=True,capture_output=True)
     elif enable_services:
-        native=executable(root,'corix-ziokt.sh');native_sha256=sha(native)
+        native=executable(root,'corix_v108.sh');native_sha256=sha(native)
     if genesis is not None:
         genesis=Path(genesis).expanduser().absolute()
         if genesis.is_symlink() or not genesis.is_file() or genesis.stat().st_size>1048576 or not re.fullmatch('[a-f0-9]{64}',str(genesis_sha256)) or sha(genesis)!=genesis_sha256:raise ValueError('explicit checksum-pinned public genesis required')
@@ -433,11 +466,11 @@ allowed_resources = *
         if sys.platform!='linux':raise ValueError('native node initialization currently requires GNU/Linux')
         target=corium_dir/'bin/corix_v108.sh';target.parent.mkdir(mode=0o700)
         shutil.copyfile(native,target);target.chmod(0o500)
-        if enable_services:
+        if enable_services or native_entrypoint is None:
             for name in ('consensus_hold.py','consensus_core.py','verify_mainnet_history.py','audit_history_provenance.py',
                          'recovery_transition_plan.py','sovereign_status.py','recovery_consensus.py',
                          'work_consensus.py','work_weight_policy.py','work_weight_native.py','openci_consensus.py',
-                         'dna_protocol.py','cooperative_protocol.py','shielded_ownership.py','gimps_consensus.py'):
+                         'dna_protocol.py','cooperative_protocol.py','cooperative_consensus.py','deploy_dna_sidechain.py','shielded_ownership.py','gimps_consensus.py'):
                 source=executable(root,name)
                 shutil.copyfile(source,target.parent/name);(target.parent/name).chmod(0o400)
         if genesis is not None:

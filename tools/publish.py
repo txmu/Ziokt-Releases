@@ -13,6 +13,8 @@ import re
 import subprocess
 import tempfile
 import zipfile
+import base64
+from functools import lru_cache
 from urllib.parse import quote
 import sys
 ROOT=Path(__file__).resolve().parents[1]
@@ -74,6 +76,32 @@ def verified_commit(repository,revision):
     return sorted(run['html_url'] for run in latest.values())
 
 
+@lru_cache(maxsize=64)
+def native_assurance(revision):
+    source=api('repos/txmu/Ziokt/contents/native-sources.lock.json?ref='+revision)
+    lock=json.loads(base64.b64decode(source['content'],validate=False))
+    if set(lock)!={'corium','shadow6'}:raise ValueError('exact native lock required')
+    revisions={'txmu/Ziokt':revision}
+    for key,repo in (('corium','txmu/Corium'),('shadow6','txmu/Shadow6')):
+        item=lock[key]
+        if item.get('repository')!=repo or not re.fullmatch('[a-f0-9]{40}',item.get('revision','')):raise ValueError('invalid native source pin')
+        revisions[repo]=item['revision']
+    formal={};checks={}
+    for repo,sha in revisions.items():
+        checks[repo]=verified_commit(repo,sha)
+        expected='.github/workflows/formal-joint.yml' if repo=='txmu/Ziokt' else '.github/workflows/formal.yml'
+        runs=[]
+        for page in range(1,11):
+            batch=api(f'repos/{repo}/actions/runs?head_sha={sha}&per_page=100&page={page}')['workflow_runs'];runs.extend(batch)
+            if len(batch)<100:break
+        matching=[r for r in runs if r['head_sha']==sha and r['head_repository']['full_name']==repo and r.get('path','').split('@')[0]==expected]
+        run=max(matching,key=lambda r:r['id']) if matching else None
+        if not run or not ci_success(run['status'],run.get('conclusion') or ''):raise ValueError('formal workflow must pass for every exact native source revision')
+        formal[repo]=run['html_url']
+    return {'schema':'ziokt.native-release-assurance.v1','source_revision':revision,
+            'native_sources':lock,'formal_workflows':formal,'revision_workflows':checks}
+
+
 def publish_run(repository,run_id,directory):
     source=next((s for s in json.loads((ROOT/'sources.json').read_text())['sources'] if s['repository']==repository),None)
     if not source:raise ValueError('source repository is not approved')
@@ -92,7 +120,10 @@ def publish_run(repository,run_id,directory):
     if not exists.returncode:
         old=directory/(tag+'-existing');old.mkdir()
         result=gh('release','download',tag,'--repo',HUB,'--pattern','build-manifest.json','--dir',old)
-        return [dict(item,all_revision_workflows_passed=True,verified_revision_workflows=checks) for item in json.loads((old/'build-manifest.json').read_text())['artifacts']]
+        items=[dict(item,all_revision_workflows_passed=True,verified_revision_workflows=checks) for item in json.loads((old/'build-manifest.json').read_text())['artifacts']]
+        for item in items:
+            if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts':item['formal_verification']=native_assurance(run['head_sha'])
+        return items
     area=directory/tag;area.mkdir();records=[]
     for artifact in artifacts:
         name=artifact['name']
@@ -106,6 +137,10 @@ def publish_run(repository,run_id,directory):
         if declared and declared!='sha256:'+digest:raise ValueError('source Actions artifact digest mismatch')
         members=archive_members(path)
         records.append({'id':repository+'/'+name,'name':name,'kind':'github-actions-artifact-zip','file':path.name,'url':f'https://github.com/{HUB}/releases/download/{quote(tag,safe="")}/{quote(path.name,safe="")}', 'sha256':digest,'bytes':path.stat().st_size,'source_repository':repository,'source_revision':run['head_sha'],'source_run':run['html_url'],'source_run_conclusion':run['conclusion'],'all_revision_workflows_passed':True,'verified_revision_workflows':checks,'source_artifact_id':artifact['id'],'source_artifact_digest_verified':bool(declared),'individual_business_acceptance':'not_assessed','files':members})
+        if repository=='txmu/Ziokt' and name=='ziokt-enabled-native-artifacts':
+            records[-1]['formal_verification']=native_assurance(run['head_sha'])
+            from deploy import native_bundle
+            native_bundle(records[-1])
     manifest={'schema':'ziokt.distribution-build.v1','source_repository':repository,'source_revision':run['head_sha'],'source_run':run['html_url'],'source_run_conclusion':run['conclusion'],'artifacts':records,'verified_revision_workflows':checks,'assurance':'Transfer and source digest verification are separate from build, signing, runtime and business acceptance.'}
     (area/'build-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
     (area/'SHA256SUMS').write_text(''.join(file_sha(p)+'  '+p.name+'\n' for p in sorted(area.iterdir()) if p.is_file()))
@@ -131,7 +166,14 @@ def publish(repository=None,run_id=None,limit=100):
             if key not in verified:
                 try:verified[key]=verified_commit(*key)
                 except ValueError:verified[key]=None
-            if verified[key]:records[item['id']]=dict(item,all_revision_workflows_passed=True,verified_revision_workflows=verified[key])
+            if verified[key]:
+                candidate=dict(item,all_revision_workflows_passed=True,verified_revision_workflows=verified[key])
+                if item['id']=='txmu/Ziokt/ziokt-enabled-native-artifacts':
+                    try:
+                        from deploy import native_bundle
+                        candidate['formal_verification']=native_assurance(item['source_revision']);native_bundle(candidate)
+                    except ValueError:continue
+                records[item['id']]=candidate
         sources=json.loads((ROOT/'sources.json').read_text())['sources']
         for source in sources:
             repo=source['repository']

@@ -161,6 +161,33 @@ class GatewayProbeTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_installed_native_rejects_changed_gimps_module(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);names=['ziokt.pyz','openci.pyz','corix_v108.sh','corium-runtime/gimps_consensus.py','corium-runtime/cooperative_consensus.py','corium-runtime/cooperative_protocol.py'];files={}
+            for name in names:
+                path=root/name;path.parent.mkdir(exist_ok=True);path.write_bytes(b'checked source')
+                files[name]={'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+            pins={'corium':{'revision':'b'*40},'shadow6':{'revision':'c'*40}}
+            (root/'native-release.json').write_text(json.dumps({'schema':'ziokt.native-release.v1','source_revision':'a'*40,'native_sources':pins,'required_files':files}))
+            item={'source_revision':'a'*40,'formal_verification':{'native_sources':pins}}
+            deploy.installed_native(root,item)
+            (root/'corium-runtime/gimps_consensus.py').write_bytes(b'changed source')
+            with self.assertRaisesRegex(ValueError,'digest mismatch'):deploy.installed_native(root,item)
+
+    def test_native_bundle_requires_all_binaries_modules_and_formal_evidence(self):
+        sha='a'*40;repos=('txmu/Ziokt','txmu/Corium','txmu/Shadow6')
+        assurance={'schema':'ziokt.native-release-assurance.v1','source_revision':sha,
+                   'native_sources':{'corium':{'revision':'b'*40},'shadow6':{'revision':'c'*40}},
+                   'formal_workflows':{repo:'https://github.com/'+repo+'/actions/runs/1' for repo in repos},
+                   'revision_workflows':{repo:['https://github.com/'+repo+'/actions/runs/1'] for repo in repos}}
+        names=['ziokt.pyz','openci.pyz','corix_v108.sh','corium-runtime/gimps_consensus.py','corium-runtime/cooperative_consensus.py','corium-runtime/cooperative_protocol.py','native-release.json']
+        item={'source_revision':sha,'formal_verification':assurance,'files':[{'path':name} for name in names]}
+        deploy.native_bundle(item)
+        for name in names:
+            with self.subTest(name=name),self.assertRaises(ValueError):deploy.native_bundle({**item,'files':[f for f in item['files'] if f['path']!=name]})
+        with self.assertRaises(ValueError):deploy.native_bundle({**item,'formal_verification':{}})
+
     def test_gateway_profile_requires_matching_green_compiler(self):
         native={'id':'txmu/Ziokt/ziokt-enabled-native-artifacts','source_revision':'a'*40}
         compiler={'id':'txmu/Ziokt/openci-light-compiler-'+'b'*40}
