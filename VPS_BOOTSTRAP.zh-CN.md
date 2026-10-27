@@ -65,7 +65,7 @@ curl -fsS http://127.0.0.1:8081/openci/v1/light/config
 
 ## 本轮 GIMPS / RetroShare 更新
 
-GIMPS 验证模块随原生运行时一起交付；默认本地指数上限 100000、内存估算上限 256 MiB。可在独立节点 `config/effort-web.json` 中设置 `max_native_exponent`、`max_memory_mb` 后重启自己的 effort 服务。原生节点可设置 `CORIUM_GIMPS_MAX_EXPONENT`、`CORIUM_GIMPS_MAX_MEMORY_MB`；提交方自报 mprime/prime95 不会放宽验证资源限制。
+GIMPS 验证模块随原生运行时一起交付；默认本地指数上限 100000、内存估算上限 256 MiB。可在独立节点 `config/effort.json` 中设置 `max_native_exponent`、`max_memory_mb` 后重启自己的 effort 服务。原生节点可设置 `CORIUM_GIMPS_MAX_EXPONENT`、`CORIUM_GIMPS_MAX_MEMORY_MB`；提交方自报 mprime/prime95 不会放宽验证资源限制。
 
 重启 Gateway/奋斗服务会恢复本机有效租约和检查点。每个独立节点使用不同根目录、服务前缀、私钥和端口；不要把一个运行中的 SQLite 状态目录当作跨机排他租约服务。
 
