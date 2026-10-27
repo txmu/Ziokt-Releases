@@ -353,7 +353,8 @@ def bootstrap(root, network='ziokt-main', public_ip=None, seed_peer=None, gatewa
     for port in (p2p_port,gateway_port,mcp_port,openci_port,dns_port,doh_port,effort_port):
         if type(port) is not int or not 1024<=port<=65000:raise ValueError('unprivileged bounded service ports required')
     if p2p_port>63000:raise ValueError('native TCP offsets require P2P port at most 63000')
-    if len({p2p_port,p2p_port+1000,p2p_port+2000,gateway_port,mcp_port,openci_port,dns_port,doh_port,effort_port})!=9:raise ValueError('native and application listener ports must be distinct')
+    native_api_port=p2p_port+1
+    if len({p2p_port,native_api_port,p2p_port+1000,p2p_port+2000,gateway_port,mcp_port,openci_port,dns_port,doh_port,effort_port})!=10:raise ValueError('native and application listener ports must be distinct')
     if (native_entrypoint is not None or enable_services) and sys.platform!='linux':raise ValueError('full native nodes require GNU/Linux; use WSL2 or a Linux VM on this host')
     native=None
     if native_entrypoint is not None:
@@ -447,7 +448,7 @@ gpg_signing_key =
 require_gpg_signature = true
 
 [gateway]
-port = 8080
+port = {native_api_port}
 enabled = true
 
 [ziokt]
@@ -475,7 +476,7 @@ allowed_resources = *
                 shutil.copyfile(source,target.parent/name);(target.parent/name).chmod(0o400)
         if genesis is not None:
             shutil.copyfile(genesis,corix_conf.parent/'genesis.json');(corix_conf.parent/'genesis.json').chmod(0o600)
-        env=dict(os.environ,CORIUM_ROOT=str(corium_dir),CORIUM_NETWORK_ID_OVERRIDE=network,PYTHON_CMD=python_executable(root),PATH=str(Path(python_executable(root)).parent)+os.pathsep+os.environ.get('PATH',os.defpath))
+        env=dict(os.environ,CORIUM_ROOT=str(corium_dir),CORIUM_NETWORK_ID_OVERRIDE=network,CORIUM_GATEWAY_PORT=str(native_api_port),PYTHON_CMD=python_executable(root),PATH=str(Path(python_executable(root)).parent)+os.pathsep+os.environ.get('PATH',os.defpath))
         # Native state creation generates this node's own keys; never copy validator secrets.
         log=config_dir/'native-initialization.log'
         with log.open('xb') as output:
@@ -492,7 +493,7 @@ allowed_resources = *
             peer=urlsplit('//'+seed_peer);cache=corium_dir/'var/lib/corix/p2p/peer_certs';cache.mkdir(parents=True,mode=0o700,exist_ok=True)
             peer_file=cache/(peer.hostname.replace(':','_')+'_'+str(peer.port)+'.pem');shutil.copyfile(seed_certificate,peer_file);peer_file.chmod(0o600)
         wrapper=root/'native-service.sh'
-        wrapper.write_text('#!/usr/bin/env bash\numask 077\nexport CORIUM_ROOT='+shlex.quote(str(corium_dir))+'\nexport CORIUM_NETWORK_ID_OVERRIDE='+shlex.quote(network)+'\nexport PATH='+shlex.quote(str(Path(python_executable(root)).parent)+os.pathsep+os.defpath)+'\nexport PYTHON_CMD='+shlex.quote(python_executable(root))+'\nsource '+shlex.quote(str(target))+'\nload_config || exit 1\ncase "$1" in\np2p) dht_bootstrap; wait ;;\n*) exit 2 ;;\nesac\n');wrapper.chmod(0o500)
+        wrapper.write_text('#!/usr/bin/env bash\numask 077\nexport CORIUM_ROOT='+shlex.quote(str(corium_dir))+'\nexport CORIUM_NETWORK_ID_OVERRIDE='+shlex.quote(network)+'\nexport CORIUM_GATEWAY_PORT='+str(native_api_port)+'\nexport PATH='+shlex.quote(str(Path(python_executable(root)).parent)+os.pathsep+os.defpath)+'\nexport PYTHON_CMD='+shlex.quote(python_executable(root))+'\nsource '+shlex.quote(str(target))+'\nload_config || exit 1\ncase "$1" in\np2p) dht_bootstrap || exit 1; while sleep 5; do test -f "$DAEMON_PID_FILE" && kill -0 "$(cat "$DAEMON_PID_FILE")" || exit 1; done ;;\n*) exit 2 ;;\nesac\n');wrapper.chmod(0o500)
     gateway_file = config_dir / 'gateway.json'
     gateway_doc = {
         'schema': 'ziokt.gateway.v1',

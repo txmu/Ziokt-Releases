@@ -65,6 +65,7 @@ class IndependentNodeInputTests(unittest.TestCase):
             source=base/'native.sh';source.write_text('#!/bin/bash\nexit 0\n')
             with self.assertRaises(ValueError):deploy.bootstrap(base/'node',public_ip='192.0.2.1',native_entrypoint=source,native_sha256='0'*64)
             with self.assertRaises(ValueError):deploy.bootstrap(base/'node',public_ip='192.0.2.1',gateway_port=7234)
+            with self.assertRaises(ValueError):deploy.bootstrap(base/'node',public_ip='192.0.2.1',gateway_port=7235)
             self.assertFalse((base/'node/config').exists())
     def test_installer_requires_revision_wide_gate_not_one_passing_artifact(self):
         item={'id':'test/artifact','kind':'github-actions-artifact-zip','source_run_conclusion':'success'}
