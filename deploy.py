@@ -529,7 +529,7 @@ allowed_resources = *
         'corium:registry:read', 'corium:registry:submit', 'shadow6:read', 'shadow6:write',
         'gateway:read', 'gateway:write', 'library:read', 'library:write',
         'netnews:read', 'netnews:write', 'content:read', 'content:write', 'content:admin',
-        'applications:read', 'applications:write', 'optimization:read', 'optimization:write', 'feeds:read'
+        'mail:read', 'mail:write', 'applications:read', 'applications:write', 'optimization:read', 'optimization:write', 'feeds:read'
     ]
     mcp_doc = {
         'schema': 'ziokt.mcp.v1',
@@ -542,6 +542,7 @@ allowed_resources = *
         'origins': ['http://127.0.0.1:'+str(gateway_port), 'http://localhost:'+str(gateway_port)],
         'writes_enabled': False,
         'bridges': {},
+        'mail': {'clients': {}},
         'content_fabric': {'enabled': True, 'root': str(root / 'state/content'),
                            'accounts': {'ziokt-operator': 'owner'}},
         'cimd_enabled': True,

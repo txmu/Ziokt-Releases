@@ -102,3 +102,11 @@ The latest native catalogue entry is published only after CI and Lean checks pas
 The native runtime also carries deploy_dna_sidechain.py. Independent DNA nodes can use --recovery-file with the public signed recovery declaration; they do not need the originating authority private key. DNA uses a separate data root and an explicitly trusted legacy checkpoint.
 
 Native nodes use the P2P base port for DHT, base+1 for the embedded native API, base+1000 for the TLS API and base+2000 for file transfer. Bootstrap validates these against every application listener. Separate node roots and distinct base/application ports support several nodes on one host. The service wrapper monitors the detached native daemon and lets systemd restart it on failure.
+
+### Optional Mail and Telegram on independent nodes
+
+Bootstrap grants the local `ziokt-operator` the Mail scopes, keeps writes disabled, and creates no shared Internet mailbox credentials. Each node creates its own native Mail identity on first use. Configure only that node's `config/mcp.json` → `mail.clients.<authenticated-client>.internet` when actual accounts are available; account state is isolated per client and account. Follow the [Mail configuration guide](https://github.com/txmu/Ziokt/blob/main/docs/MAIL-BRIDGE-V1.0.md) for aliases, OAuth2, scanning, read-receipt policy and optional Internet gateway prerequisites.
+
+A standalone background Mail worker needs no source checkout: `python /path/to/installed/ziokt.pyz mail --config /private/this-node-mail.json internet-sync`. Add `--once` for one bounded cycle. Run it as a supervised service with this node's own private config. MCP also starts configured Mail workers automatically. Never copy another node's identity, state database, tokens or Telegram bot credentials. Telegram needs the operator's explicitly configured bot/token and permitted chat mapping; unconfigured external services are reported as unconfigured.
+
+The remote independent-deployment acceptance now checks three separately generated Mail identities alongside the existing Gateway, ZDNS, Content Fabric, native peer and compiler checks. Actual multi-host acceptance remains a separate deployment test; one-host CI does not certify separate failure domains.

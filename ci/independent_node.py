@@ -41,7 +41,7 @@ def main():
             result=subprocess.run(['bash','-c',command,'peer-check',str(root/'bin/corix_v108.sh'),target['native']['identity'],str(port)],env=dict(os.environ,CORIUM_ROOT=str(root),CORIUM_NETWORK_ID_OVERRIDE='ci-independent'),text=True,capture_output=True,timeout=45)
             if result.returncode or 'PONG' not in result.stdout:raise RuntimeError('real signed native peer exchange failed: '+result.stderr[-500:])
         for source,target,port in pairs:exchange(source,target,port)
-        observations=[];content_identities=set()
+        observations=[];content_identities=set();mail_identities=set()
         for index,node in enumerate(nodes):
             with urllib.request.urlopen('http://127.0.0.1:'+str(18185+index*1000)+'/api/gateway/sites',timeout=10) as response:sites=json.load(response)
             if not sites['configured'] or sites['default_resolver']!='node-zdns':raise RuntimeError('own-node ZDNS site resolution unavailable')
@@ -54,9 +54,15 @@ def main():
             content=deploy.probe_gateway_tool(Path(node['root']),'content_health')
             if content.get('status')!='ok' or content['data'].get('schema')!='ziokt.content-health.v1':raise RuntimeError('own-node Content Fabric is unavailable through Gateway/MCP')
             content_identities.add(content['data']['node'])
+            mail=deploy.probe_gateway_tool(Path(node['root']),'mail_identity')
+            if mail.get('status')!='ok' or mail['data'].get('internet_configured') is not False:raise RuntimeError('own native mail identity or optional internet account boundary unavailable')
+            public=mail['data'].get('public_key','')
+            if len(public)!=64 or mail['data'].get('address')!=public+'@node.ziokt':raise RuntimeError('native mail identity differs')
+            mail_identities.add(public)
 
             if not json.loads(Path(node['consensus_hold']).read_text())['active']:raise RuntimeError('bootstrap must preserve unverified-history hold')
-            observations.append({'identity':node['native']['identity'],'genesis_hash':node['native']['genesis_hash'],'own_gateway':True,'own_zdns':True,'own_mcp':True,'own_openci':True,'own_effort':True,'own_content_fabric':True,'own_compiler_admission':True,'unverified_history_consensus_held':True,'connectivity':node['connectivity']})
+            observations.append({'identity':node['native']['identity'],'genesis_hash':node['native']['genesis_hash'],'own_gateway':True,'own_zdns':True,'own_mcp':True,'own_openci':True,'own_effort':True,'own_content_fabric':True,'own_mail_identity':True,'internet_mail_configured':False,'own_compiler_admission':True,'unverified_history_consensus_held':True,'connectivity':node['connectivity']})
+        if len(mail_identities)!=3:raise RuntimeError('independent mail identities were not preserved')
         if len(content_identities)!=3:raise RuntimeError('independent Content Fabric identities were not preserved')
         contributions=node_contributions.contribute(nodes,material,output)
         seed_units=[unit for unit in units if unit.startswith('ziokt-ci-seed-')]

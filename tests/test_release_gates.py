@@ -55,6 +55,10 @@ class IndependentNodeInputTests(unittest.TestCase):
                 self.assertIn('content:read',config['cimd_scopes'])
                 self.assertNotIn('content:write',config['cimd_scopes'])
                 self.assertFalse(config['writes_enabled'])
+                self.assertIn('mail:read',config['clients']['ziokt-operator']['scopes'])
+                self.assertIn('mail:write',config['clients']['ziokt-operator']['scopes'])
+                self.assertNotIn('mail:write',config['cimd_scopes'])
+                self.assertEqual(config['mail'],{'clients':{}})
                 configs.append(config)
             self.assertNotEqual(configs[0]['content_fabric']['root'],configs[1]['content_fabric']['root'])
 
