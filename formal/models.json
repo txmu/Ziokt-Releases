@@ -5,7 +5,7 @@
     "Release.lean": {
       "namespace": "Ziokt.Release",
       "source_sha256": {
-        "deploy.py": "9c6e9888066aa0b89009a54a028624f72e612c4943e7bf6021ebe06711a2b3c2",
+        "deploy.py": "aa7d52b5204746a70412b9353b5c2338bf1fc9e3aac4461a7566c881ac393804",
         "tools/publish.py": "99d3c15bd970837f0bc756397eda9c0f185e5801e9433302712fdbb4956ab4e4",
         "formal/contracts.json": "04831f4226467f7ca225f1730538889aa4b6cab5ab721783bc4844bb9af809be",
         "formal/generate_guards.py": "da17dd6bbda8cf4c00e01e7e8ca4e91e0c8e8ba16b1634b1932ebbd954f7747b"

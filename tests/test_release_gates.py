@@ -45,9 +45,9 @@ class IndependentNodeInputTests(unittest.TestCase):
     def test_each_node_provisions_its_own_content_infrastructure_without_public_writes(self):
         with tempfile.TemporaryDirectory() as directory,patch.object(deploy,'preflight',return_value={'overall_pass':True}):
             configs=[]
-            for name in ('first','second'):
+            for index,name in enumerate(('first','second')):
                 root=Path(directory)/name
-                result=deploy.bootstrap(root,connectivity='outbound',service_prefix='test-'+name)
+                result=deploy.bootstrap(root,connectivity='outbound',service_prefix='test-'+name,gateway_port=18185+index*1000)
                 config=json.loads(Path(result['mcp_config']).read_text())
                 self.assertTrue(config['content_fabric']['enabled'])
                 self.assertEqual(Path(config['content_fabric']['root']),root/'state/content')
@@ -59,6 +59,10 @@ class IndependentNodeInputTests(unittest.TestCase):
                 self.assertIn('mail:write',config['clients']['ziokt-operator']['scopes'])
                 self.assertNotIn('mail:write',config['cimd_scopes'])
                 self.assertEqual(config['mail'],{'clients':{}})
+                browser=config['clients']['ziokt-browser']
+                self.assertIn('mail:write',browser['scopes'])
+                self.assertNotIn('ziokt:admin',browser['scopes'])
+                self.assertEqual(browser['redirect_uris'],['http://'+host+':'+str(18185+index*1000)+'/gateway-assets/oauth-callback.html' for host in ('127.0.0.1','localhost')])
                 configs.append(config)
             self.assertNotEqual(configs[0]['content_fabric']['root'],configs[1]['content_fabric']['root'])
 

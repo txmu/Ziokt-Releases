@@ -548,6 +548,10 @@ allowed_resources = *
         'cimd_enabled': True,
         'cimd_scopes': scopes,
         'clients': {
+            'ziokt-browser': {
+                'redirect_uris': [origin+'/gateway-assets/oauth-callback.html' for origin in gateway_doc['gui_origins']],
+                'scopes': sorted({scope for scope in scopes if scope.endswith(':read')} | {'mail:write'})
+            },
             'ziokt-operator': {
                 'redirect_uris': ['http://127.0.0.1:8765/callback'],
                 'scopes': scopes
