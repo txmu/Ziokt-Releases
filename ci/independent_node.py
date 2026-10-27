@@ -17,7 +17,7 @@ def main():
     nodes=[];units=[]
     try:
         catalog=deploy.catalog(deploy.REPOSITORY,output,expected=args.catalog_sha256)
-        approved=deploy.plan(catalog,['txmu/Ziokt/ziokt-enabled-native-artifacts','txmu/Ziokt/openci-light-compiler-'+args.source_revision],include=['*.pyz','corix-ziokt.sh','*.py','*.wasm','*.js','manifest.json'])
+        approved=deploy.plan(catalog,['txmu/Ziokt/ziokt-enabled-native-artifacts','txmu/Ziokt/openci-light-compiler-'+args.source_revision])
         if len(approved['artifacts'])!=2:raise RuntimeError('both exact native and compiler bundles required')
         if any(a['source_revision']!=args.source_revision or a.get('all_revision_workflows_passed') is not True for a in approved['artifacts']):raise RuntimeError('only the exact completed green revision may enter independent deployment acceptance')
         material=node_contributions.prepare(output)
