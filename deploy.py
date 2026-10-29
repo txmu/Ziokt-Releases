@@ -234,7 +234,7 @@ def persist(root,service,argv,name=None):
         system=os.geteuid()==0;directory=Path('/etc/systemd/system') if system else Path.home()/'.config/systemd/user';directory.mkdir(parents=True,exist_ok=True)
         unit=directory/(name+'.service')
         if unit.exists():raise ValueError('existing system service retained; choose an unused service name or review it manually')
-        unit.write_text('[Unit]\nDescription=Ziokt '+service+'\nAfter=network-online.target\n[Service]\nType=simple\nExecStart='+' '.join(map(escape,argv))+'\nWorkingDirectory='+escape(str(root))+'\nRestart=on-failure\nRestartSec=5\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nReadWritePaths='+escape(str(root))+'\n[Install]\nWantedBy='+('multi-user.target' if system else 'default.target')+'\n')
+        unit.write_text('[Unit]\nDescription=Ziokt '+service+'\nAfter=network-online.target\n[Service]\nType=simple\nExecStart='+' '.join(map(escape,argv))+'\nWorkingDirectory='+str(root)+'\nRestart=on-failure\nRestartSec=5\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nReadWritePaths='+str(root)+'\n[Install]\nWantedBy='+('multi-user.target' if system else 'default.target')+'\n')
         control=['systemctl']+([] if system else ['--user']);subprocess.run([*control,'daemon-reload'],check=True);subprocess.run([*control,'enable','--now',name],check=True)
         return str(unit)
     if sys.platform=='darwin':
@@ -533,7 +533,7 @@ allowed_resources = *
     ]
     mcp_doc = {
         'schema': 'ziokt.mcp.v1',
-        'issuer': 'http://127.0.0.1:'+str(mcp_port),
+        'issuer': 'https://127.0.0.1:'+str(mcp_port),
         'port': mcp_port,
         'state': str(mcp_state),
         'admin_token': str(token_file),
