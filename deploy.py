@@ -468,7 +468,7 @@ allowed_resources = *
         target=corium_dir/'bin/corix_v108.sh';target.parent.mkdir(mode=0o700)
         shutil.copyfile(native,target);target.chmod(0o500)
         if enable_services or native_entrypoint is None:
-            for name in ('consensus_hold.py','consensus_core.py','verify_mainnet_history.py','audit_history_provenance.py',
+            for name in ('consensus_hold.py','rebuild_authorization.py','consensus_core.py','verify_mainnet_history.py','audit_history_provenance.py',
                          'recovery_transition_plan.py','sovereign_status.py','recovery_consensus.py',
                          'work_consensus.py','work_weight_policy.py','work_weight_native.py','openci_consensus.py',
                          'dna_protocol.py','cooperative_protocol.py','cooperative_consensus.py','deploy_dna_sidechain.py','shielded_ownership.py','gimps_consensus.py'):
