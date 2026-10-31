@@ -321,7 +321,7 @@ def persist(root,service,argv,name=None):
     write(area/'command.json',argv)
     logs=root/'logs';logs.mkdir(exist_ok=True,mode=0o700)
     runner=area/'run.py'
-    runner.write_text('''import json,os,pathlib,signal,subprocess,sys
+    runner.write_text('''import json,os,pathlib,signal,subprocess,sys,time
 root=pathlib.Path(__file__).resolve().parents[2]
 command=json.loads(pathlib.Path(__file__).with_name('command.json').read_text())
 path=root/'logs'/(__file__.split(os.sep)[-2]+'.log')
@@ -341,7 +341,12 @@ with path.open('ab',buffering=0) as output:
   raise SystemExit(0)
  signal.signal(signal.SIGTERM,stop)
  signal.signal(signal.SIGINT,stop)
- raise SystemExit(child.wait())
+ while True:
+  code=child.wait()
+  if os.name!='nt':raise SystemExit(code)
+  output.write(('Ziokt daemon exited '+str(code)+'; restarting in 5 seconds.\\n').encode())
+  time.sleep(5)
+  child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT)
 ''');runner.chmod(0o600)
     argv=[sys.executable,str(runner)]
     if sys.platform.startswith('linux'):
