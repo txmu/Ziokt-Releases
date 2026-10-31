@@ -26,6 +26,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 REPOSITORY='txmu/Ziokt-Releases'
 SERVICES={'gateway':('ziokt.pyz',['gateway','serve']),'mcp':('ziokt.pyz',['mcp','serve']),'content':('ziokt.pyz',[]),'effort':('ziokt.pyz',['effort-web']),'openci':('openci.pyz',[])}
+MAINNET_ORIGIN='https://app.ziokt.com/mainnet/'
 
 # BEGIN GENERATED VERIFIED GUARDS
 def _contract_argument(value, kind):
@@ -215,6 +216,93 @@ def runtime(root,proxy=None):
     subprocess.run(command,check=True)
 
 
+def join_network(root,options):
+    """Default deployment joins both public chains with new independent keys."""
+    if not sys.platform.startswith('linux'):raise ValueError('native chains require Linux; run this installer inside WSL2 on Windows or a Linux VM on macOS. Application daemons support native systemd, launchd and Task Scheduler.')
+    root.mkdir(parents=True,exist_ok=True)
+    cache=root/'downloads';cache.mkdir(exist_ok=True)
+    supplied=getattr(options,'join_script',None)
+    if supplied:
+        script=Path(supplied).resolve();expected=getattr(options,'join_script_sha256',None)
+        if not expected or script.is_symlink() or sha(script)!=expected:raise ValueError('explicit join script checksum required')
+    else:
+        checksum=cache/'join_mainnet.py.sha256';fetch(MAINNET_ORIGIN+'join_mainnet.py.sha256',checksum,limit=1024,proxy=getattr(options,'proxy',None))
+        expected=checksum.read_text().split()[0]
+        if not re.fullmatch('[a-f0-9]{64}',expected):raise ValueError('join script checksum format')
+        script=cache/'join_mainnet.py';fetch(MAINNET_ORIGIN+'join_mainnet.py',script,expected,256*1024,getattr(options,'proxy',None))
+    python=python_executable(root)
+    if subprocess.run([python,'-c','import cryptography'],capture_output=True).returncode:
+        runtime(root,getattr(options,'proxy',None));python=python_executable(root)
+    command=[python,str(script),'--root',str(root/'network'),'--business-chain',getattr(options,'business_chain','primary'),'--service-prefix',getattr(options,'service_prefix','ziokt')]
+    for option in ('bootstrap_url','bootstrap_file','sha256','dna_network','advertise_host','p2p_port','dna_p2p_port'):
+        value=getattr(options,option,None)
+        if value is not None:command.extend(['--'+option.replace('_','-'),str(value)])
+    network=getattr(options,'network','ziokt-main')
+    if getattr(options,'create',False):command.extend(['--create',network])
+    elif network!='ziokt-main':command.extend(['--custom-network','--expected-network',network])
+    if not getattr(options,'prepare_only',False):command.append('--enable-services')
+    env=dict(os.environ,PYTHON_CMD=python,PATH=str(Path(python).parent)+os.pathsep+os.environ.get('PATH',os.defpath))
+    subprocess.run(command,env=env,check=True)
+    return {'schema':'ziokt.network-deployment.v1','root':str(root/'network'),'network':network,'created':bool(getattr(options,'create',False)),'services_enabled':not getattr(options,'prepare_only',False)}
+
+
+def service_control(root,operation,selection='all'):
+    """Control only this installation's recorded services; retain node data."""
+    entries={}
+    file=root/'services.json'
+    if file.exists():
+        for key,item in json.loads(file.read_text()).items():
+            name=item.get('service',key if key.startswith('ziokt-') else 'ziokt-'+key)
+            entries[name]={'definition':item.get('definition',''),'scope':'system' if hasattr(os,'geteuid') and os.geteuid()==0 else 'user'}
+    for base in (root,root/'network'):
+        file=base/'managed-services.json'
+        if file.exists():
+            document=json.loads(file.read_text())
+            if not document['enabled']:raise ValueError('services were prepared only; enable them during deployment before controlling them')
+            entries.update({name:{'definition':path,'scope':document['scope'],'unit':name} for name,path in document['services'].items()})
+    chosen=entries if selection=='all' else {selection:entries[selection]} if selection in entries else {}
+    if not chosen:raise ValueError('no recorded services match this installation')
+    results={}
+    for name,item in chosen.items():
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}(?:\.(?:service|timer))?',name):raise ValueError('invalid recorded service name')
+        if sys.platform.startswith('linux'):
+            unit=item.get('unit',name+'.service');control=['systemctl']+(['--user'] if item['scope']=='user' else [])
+            if operation=='logs':command=['journalctl']+(['--user'] if item['scope']=='user' else [])+['-u',unit,'-n','80','--no-pager']
+            elif operation=='status':command=control+['show',unit,'--property=ActiveState,SubState,MainPID,NRestarts,UnitFileState,ExecMainStatus']
+            elif operation=='uninstall':
+                subprocess.run(control+['disable','--now',unit],check=True)
+                path=Path(item['definition'])
+                if path.name!=unit:raise ValueError('service definition mismatch')
+                path.unlink();command=control+['daemon-reload']
+            else:command=control+[operation,*(['--now'] if operation in {'enable','disable'} else []),unit]
+        elif sys.platform=='darwin':
+            label='org.ziokt.'+name;domain='gui/'+str(os.getuid());target=domain+'/'+label
+            if operation=='status':command=['launchctl','print',target]
+            elif operation in {'stop','disable','uninstall'}:
+                command=['launchctl','bootout',domain,item['definition']]
+                if operation=='disable':subprocess.run(['launchctl','disable',target],check=True)
+            elif operation in {'start','enable'}:
+                subprocess.run(['launchctl','enable',target],check=True);command=['launchctl','bootstrap',domain,item['definition']]
+            elif operation=='restart':command=['launchctl','kickstart','-k',target]
+            else:command=None
+        elif os.name=='nt':
+            command=['schtasks',{'start':'/Run','stop':'/End','status':'/Query','enable':'/Change','disable':'/Change','uninstall':'/Delete'}.get(operation,'/Query'),'/TN',name]
+            if operation in {'enable','disable'}:command.append('/ENABLE' if operation=='enable' else '/DISABLE')
+            if operation=='uninstall':command.append('/F')
+            if operation=='restart':subprocess.run(['schtasks','/End','/TN',name],capture_output=True);command=['schtasks','/Run','/TN',name]
+            if operation=='logs':command=None
+        else:raise ValueError('unsupported service backend')
+        if command:
+            result=subprocess.run(command,capture_output=True,text=True,timeout=30)
+            results[name]={'returncode':result.returncode,'output':(result.stdout+result.stderr)[-16384:]}
+            if result.returncode and operation!='status':raise RuntimeError('service control failed: '+name+': '+results[name]['output'])
+        else:
+            paths=[root/'logs'/(name+'.log'),root/(name+'.log'),root/(name+'.error.log')]
+            results[name]={'logs':{str(path):path.read_bytes()[-32768:].decode('utf-8','replace') for path in paths if path.is_file()}}
+        if operation=='uninstall' and sys.platform=='darwin':Path(item['definition']).unlink()
+    return {'schema':'ziokt.service-control.v1','operation':operation,'services':results}
+
+
 def command(root,service,config=None,port=8768):
     file,args=SERVICES[service];binary=executable(root,file)
     if service=='openci':return [python_executable(root),str(binary),'--root',str(root/'state/openci'),'serve','--port',str(port)]
@@ -229,22 +317,54 @@ def command(root,service,config=None,port=8768):
 def persist(root,service,argv,name=None):
     name=name or 'ziokt-'+service
     if not re.fullmatch('[A-Za-z0-9_-]{1,128}',name):raise ValueError('safe explicit service name required')
+    area=root/'daemon-runners'/name;area.mkdir(parents=True,exist_ok=True,mode=0o700)
+    write(area/'command.json',argv)
+    logs=root/'logs';logs.mkdir(exist_ok=True,mode=0o700)
+    runner=area/'run.py'
+    runner.write_text('''import json,os,pathlib,signal,subprocess,sys
+root=pathlib.Path(__file__).resolve().parents[2]
+command=json.loads(pathlib.Path(__file__).with_name('command.json').read_text())
+path=root/'logs'/(__file__.split(os.sep)[-2]+'.log')
+if path.is_symlink():raise ValueError('log symlink rejected')
+with path.open('ab',buffering=0) as output:
+ if os.name!='nt':path.chmod(0o600)
+ child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,start_new_session=os.name!='nt')
+ def stop(signum,frame):
+  try:
+   if os.name!='nt':os.killpg(child.pid,signal.SIGTERM)
+   else:child.terminate()
+   child.wait(timeout=20)
+  except subprocess.TimeoutExpired:
+   if os.name!='nt':os.killpg(child.pid,signal.SIGKILL)
+   else:child.kill()
+  except ProcessLookupError:pass
+  raise SystemExit(0)
+ signal.signal(signal.SIGTERM,stop)
+ signal.signal(signal.SIGINT,stop)
+ raise SystemExit(child.wait())
+''');runner.chmod(0o600)
+    argv=[sys.executable,str(runner)]
     if sys.platform.startswith('linux'):
         def escape(value):return '"'+value.replace('\\','\\\\').replace('"','\\"').replace('%','%%').replace('\n','\\n')+'"'
         system=os.geteuid()==0;directory=Path('/etc/systemd/system') if system else Path.home()/'.config/systemd/user';directory.mkdir(parents=True,exist_ok=True)
         unit=directory/(name+'.service')
         if unit.exists():raise ValueError('existing system service retained; choose an unused service name or review it manually')
-        unit.write_text('[Unit]\nDescription=Ziokt '+service+'\nAfter=network-online.target\n[Service]\nType=simple\nExecStart='+' '.join(map(escape,argv))+'\nWorkingDirectory='+str(root)+'\nRestart=on-failure\nRestartSec=5\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nReadWritePaths='+str(root)+'\n[Install]\nWantedBy='+('multi-user.target' if system else 'default.target')+'\n')
+        unit.write_text('[Unit]\nDescription=Ziokt '+service+'\nAfter=network-online.target\n[Service]\nType=simple\nExecStart='+' '.join(map(escape,argv))+'\nWorkingDirectory='+str(root)+'\nRestart=always\nRestartSec=5\nTimeoutStopSec=30\nKillMode=control-group\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nReadWritePaths='+str(root)+'\n[Install]\nWantedBy='+('multi-user.target' if system else 'default.target')+'\n')
         control=['systemctl']+([] if system else ['--user']);subprocess.run([*control,'daemon-reload'],check=True);subprocess.run([*control,'enable','--now',name],check=True)
         return str(unit)
     if sys.platform=='darwin':
-        directory=Path.home()/'Library/LaunchAgents';directory.mkdir(parents=True,exist_ok=True);path=directory/('org.ziokt.'+service+'.plist')
+        directory=Path.home()/'Library/LaunchAgents';directory.mkdir(parents=True,exist_ok=True);path=directory/('org.ziokt.'+name+'.plist')
         if path.exists():raise ValueError('existing launch agent retained')
-        path.write_bytes(plistlib.dumps({'Label':'org.ziokt.'+service,'ProgramArguments':argv,'WorkingDirectory':str(root),'RunAtLoad':True,'KeepAlive':True,'StandardOutPath':str(root/(service+'.log')),'StandardErrorPath':str(root/(service+'.error.log'))}))
+        path.write_bytes(plistlib.dumps({'Label':'org.ziokt.'+name,'ProgramArguments':argv,'WorkingDirectory':str(root),'RunAtLoad':True,'KeepAlive':True,'ThrottleInterval':5,'ExitTimeOut':30,'StandardOutPath':str(root/(name+'.log')),'StandardErrorPath':str(root/(name+'.error.log'))}))
         subprocess.run(['launchctl','bootstrap','gui/'+str(os.getuid()),str(path)],check=True);return str(path)
     if os.name=='nt':
         task=ET.Element('Task',{'version':'1.2','xmlns':'http://schemas.microsoft.com/windows/2004/02/mit/task'});triggers=ET.SubElement(task,'Triggers');ET.SubElement(ET.SubElement(triggers,'LogonTrigger'),'Enabled').text='true';actions=ET.SubElement(task,'Actions');execute=ET.SubElement(actions,'Exec');ET.SubElement(execute,'Command').text=argv[0];ET.SubElement(execute,'Arguments').text=subprocess.list2cmdline(argv[1:]);ET.SubElement(execute,'WorkingDirectory').text=str(root)
-        path=root/(service+'-task.xml');ET.ElementTree(task).write(path,encoding='utf-16',xml_declaration=True)
+        import ctypes
+        if ctypes.windll.shell32.IsUserAnAdmin():
+            triggers.clear();ET.SubElement(ET.SubElement(triggers,'BootTrigger'),'Enabled').text='true'
+            principals=ET.SubElement(task,'Principals');principal=ET.SubElement(principals,'Principal',{'id':'NodeService'});ET.SubElement(principal,'UserId').text='S-1-5-18';ET.SubElement(principal,'LogonType').text='ServiceAccount';ET.SubElement(principal,'RunLevel').text='HighestAvailable';actions.set('Context','NodeService')
+        settings=ET.SubElement(task,'Settings');ET.SubElement(settings,'MultipleInstancesPolicy').text='IgnoreNew';ET.SubElement(settings,'ExecutionTimeLimit').text='PT0S';ET.SubElement(settings,'StartWhenAvailable').text='true';ET.SubElement(settings,'DisallowStartIfOnBatteries').text='false';ET.SubElement(settings,'StopIfGoingOnBatteries').text='false';restart=ET.SubElement(settings,'RestartOnFailure');ET.SubElement(restart,'Interval').text='PT1M';ET.SubElement(restart,'Count').text='999'
+        path=root/(name+'-task.xml');ET.ElementTree(task).write(path,encoding='utf-16',xml_declaration=True)
         subprocess.run(['schtasks','/Create','/TN',name,'/XML',str(path)],check=True);subprocess.run(['schtasks','/Run','/TN',name],check=True);return str(path)
     raise ValueError('persistence backend unsupported on this platform')
 
@@ -735,7 +855,11 @@ def status(root):
 
 
 def main():
+    if len(sys.argv)==1:sys.argv.append('mainnet')
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,default=Path.home()/'.local/share/ziokt-node');sub=p.add_subparsers(dest='action',required=True)
+    q=sub.add_parser('mainnet',help='Join both public chains and enable their persistent services by default')
+    q.add_argument('--network',default='ziokt-main');q.add_argument('--create',action='store_true');q.add_argument('--dna-network');q.add_argument('--business-chain',choices=['primary','dna'],default='primary');q.add_argument('--bootstrap-url');q.add_argument('--bootstrap-file',type=Path);q.add_argument('--sha256');q.add_argument('--prepare-only',action='store_true');q.add_argument('--advertise-host');q.add_argument('--p2p-port',type=int);q.add_argument('--dna-p2p-port',type=int);q.add_argument('--service-prefix',default='ziokt');q.add_argument('--proxy');q.add_argument('--join-script',type=Path);q.add_argument('--join-script-sha256')
+    q=sub.add_parser('service',help='Manage this installation\'s daemons without deleting their data');q.add_argument('operation',choices=['start','stop','restart','status','logs','enable','disable','uninstall']);q.add_argument('--name',default='all')
     for name in ('plan','install'):
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
@@ -744,11 +868,13 @@ def main():
     q.add_argument('--install',action='store_true',help='Install matching green native and compiler bundles before initializing this node')
     q.add_argument('--runtime',action='store_true',help='Prepare the private Python runtime using binary wheels only')
     q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--yes',action='store_true');q.add_argument('--confirm')
+    q.add_argument('--create',action='store_true');q.add_argument('--dna-network');q.add_argument('--business-chain',choices=['primary','dna'],default='primary');q.add_argument('--bootstrap-url');q.add_argument('--bootstrap-file',type=Path);q.add_argument('--sha256');q.add_argument('--prepare-only',action='store_true');q.add_argument('--advertise-host');q.add_argument('--dna-p2p-port',type=int);q.add_argument('--join-script',type=Path);q.add_argument('--join-script-sha256');q.add_argument('--legacy-config',action='store_true',help='Generate the former explicit single-chain application configuration')
     sub.add_parser('status');sub.add_parser('rollback')
     sub.add_parser('chain-state');sub.add_parser('corium-chain-state')
     sub.add_parser('companion-status');sub.add_parser('companion-tunnel')
     q_call=sub.add_parser('call-tool');q_call.add_argument('name');q_call.add_argument('--arguments',default='{}')
     a=p.parse_args();root=a.root.expanduser().absolute()
+    if a.action=='service':print(json.dumps(service_control(root,a.operation,a.name),ensure_ascii=False,indent=2));return
     if a.action == 'bootstrap':
         if a.install:
             pf=preflight(root,a.repository,a.proxy)
@@ -757,6 +883,9 @@ def main():
             if not a.yes and a.confirm!=approved['sha256']:raise ValueError('inspect the gateway installation plan and supply --confirm SHA256, or explicitly use --yes')
             install(root,approved,a.proxy)
         if a.runtime:runtime(root,a.proxy)
+    if a.action=='mainnet' or (a.action=='bootstrap' and not a.legacy_config and not any((a.native_entrypoint,a.seed_peer,a.genesis,a.gateway_peer))):
+        print(json.dumps(join_network(root,a),ensure_ascii=False,indent=2));return
+    if a.action == 'bootstrap':
         res = bootstrap(root, a.network, a.public_ip, a.seed_peer, a.gateway_peer, a.proxy, a.enable_services,a.service_prefix,a.native_entrypoint,a.native_sha256,a.genesis,a.genesis_sha256,a.p2p_port,a.gateway_port,a.mcp_port,a.openci_port,a.dns_port,a.doh_port,a.seed_certificate,a.seed_certificate_sha256,a.connectivity,a.effort_port)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return
@@ -782,7 +911,7 @@ def main():
         if a.service=='openci':
             area=root/'state/openci'
             if not (area/'controller.json').exists():subprocess.run([python_executable(root),str(executable(root,'openci.pyz')),'--root',str(area),'init'],check=True)
-        definition=persist(root,a.service,argv);file=root/'services.json';entries=json.loads(file.read_text()) if file.exists() else {};entries[a.service]={'definition':definition,'command':argv,'business_operational':'not_assessed'};write(file,entries);print(json.dumps({'service':a.service,'enabled':True,'definition':definition}));return
+        definition=persist(root,a.service,argv);file=root/'services.json';entries=json.loads(file.read_text()) if file.exists() else {};entries[a.service]={'definition':definition,'command':argv};write(file,entries);print(json.dumps({'service':a.service,'enabled':True,'definition':definition}));return
     if a.action=='rollback':
         state=json.loads((root/'active.json').read_text());previous=state.get('previous')
         if not previous or Path(previous).parent.resolve()!=(root/'releases').resolve() or not Path(previous).is_dir():raise ValueError('previous retained release unavailable')

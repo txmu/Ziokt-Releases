@@ -21,15 +21,29 @@ All installers and client packages are hosted on the `txmu/Ziokt-Releases` GitHu
 # 预检环境
 curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- preflight
 
-# 配置新节点（端点显式指定；不会复制本机身份或自动放行共识）：
-curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- bootstrap --seed-peer "$SEED_HOST:$SEED_PORT" --gateway-peer "$SEED_GATEWAY"
+# 默认校验并加入主网双链，创建独立身份，安装开机自启和崩溃恢复服务：
+curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh
 
-# 或生成独立节点配置（不配置远端种子）：
-curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- bootstrap
+# 两条链均创建，可任选 DNA 链承载主要业务：
+python3 deploy.py --root ~/.local/share/my-node mainnet --business-chain dna
+
+# 创建自己的双链网络，并导出可分享的公开 bootstrap 和 SHA-256：
+python3 deploy.py --root ~/.local/share/my-network mainnet --create --network my-network --advertise-host node.example.org --service-prefix my-network
+
+# 使用创建者提供的公开 bootstrap 加入任意自定义网络：
+python3 deploy.py --root ~/.local/share/another-node mainnet --network my-network --bootstrap-file network-bootstrap.zip --sha256 "$BOOTSTRAP_SHA256" --service-prefix another-node
+
+# 守护进程管理：status / logs / start / stop / restart / enable / disable / uninstall
+python3 deploy.py --root ~/.local/share/my-node service status
+python3 deploy.py --root ~/.local/share/my-node service restart --name ziokt-primary-p2p.service
 
 # 或便携版客户端安装
 curl -fsSL https://raw.githubusercontent.com/txmu/Ziokt-Releases/main/install.sh | sh -s -- install --profile portable --yes
 ```
+
+原生链节点运行于 Linux；Windows 可在 WSL2、macOS 可在 Linux 虚拟机中执行同一部署命令。跨平台应用守护进程支持 systemd、launchd 和 Windows 任务计划，包含故障自动重启、独立日志和完整启停管理。Linux 系统服务开机启动，用户服务由用户管理器启动；macOS LaunchAgent 随登录启动；Windows 管理员安装创建系统开机任务，普通用户安装创建登录任务。卸载服务保留全部身份和业务数据。
+
+自建网络的两条链拥有独立创世文件和身份。创建者决定其原生共识与验证者策略。部署目录的 `IBC.json` 记录主网互通入口：按照原生 IBC 治理注册对端链的检查点验证器后，再启用消息中继。默认加入主网采用公开工作证明，无质押和邀请要求。
 
 #### Windows (PowerShell):
 ```powershell

@@ -206,6 +206,6 @@ class ProfileTests(unittest.TestCase):
     def test_one_command_bootstrap_installs_before_native_initialization(self):
         import sys
         calls=[]
-        with tempfile.TemporaryDirectory() as directory,patch.object(sys,'argv',['deploy.py','--root',directory,'bootstrap','--install','--runtime','--enable-services','--yes']),patch.object(deploy,'preflight',return_value={'overall_pass':True}),patch.object(deploy,'profile_plan',return_value={'sha256':'test'}),patch.object(deploy,'install',side_effect=lambda *a:calls.append('install')),patch.object(deploy,'runtime',side_effect=lambda *a:calls.append('runtime')),patch.object(deploy,'bootstrap',side_effect=lambda *a:calls.append('bootstrap') or {}):
+        with tempfile.TemporaryDirectory() as directory,patch.object(sys,'argv',['deploy.py','--root',directory,'bootstrap','--legacy-config','--install','--runtime','--enable-services','--yes']),patch.object(deploy,'preflight',return_value={'overall_pass':True}),patch.object(deploy,'profile_plan',return_value={'sha256':'test'}),patch.object(deploy,'install',side_effect=lambda *a:calls.append('install')),patch.object(deploy,'runtime',side_effect=lambda *a:calls.append('runtime')),patch.object(deploy,'bootstrap',side_effect=lambda *a:calls.append('bootstrap') or {}):
             deploy.main()
         self.assertEqual(calls,['install','runtime','bootstrap'])
