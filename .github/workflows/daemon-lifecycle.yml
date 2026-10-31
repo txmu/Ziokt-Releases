@@ -1,6 +1,11 @@
 name: Actual cross-platform daemon lifecycle
 on:
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Only rerun the Windows backend
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -8,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.windows_only && '["windows-latest"]' || '["ubuntu-24.04","macos-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     steps:

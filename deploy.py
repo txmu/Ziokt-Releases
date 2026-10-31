@@ -362,7 +362,7 @@ with path.open('ab',buffering=0) as output:
         import ctypes
         if ctypes.windll.shell32.IsUserAnAdmin():
             triggers.clear();ET.SubElement(ET.SubElement(triggers,'BootTrigger'),'Enabled').text='true'
-            principals=ET.SubElement(task,'Principals');principal=ET.SubElement(principals,'Principal',{'id':'NodeService'});ET.SubElement(principal,'UserId').text='S-1-5-18';ET.SubElement(principal,'LogonType').text='ServiceAccount';ET.SubElement(principal,'RunLevel').text='HighestAvailable';actions.set('Context','NodeService')
+            principals=ET.SubElement(task,'Principals');principal=ET.SubElement(principals,'Principal',{'id':'NodeService'});ET.SubElement(principal,'UserId').text='S-1-5-18';ET.SubElement(principal,'RunLevel').text='HighestAvailable';actions.set('Context','NodeService')
         settings=ET.SubElement(task,'Settings');ET.SubElement(settings,'MultipleInstancesPolicy').text='IgnoreNew';ET.SubElement(settings,'ExecutionTimeLimit').text='PT0S';ET.SubElement(settings,'StartWhenAvailable').text='true';ET.SubElement(settings,'DisallowStartIfOnBatteries').text='false';ET.SubElement(settings,'StopIfGoingOnBatteries').text='false';restart=ET.SubElement(settings,'RestartOnFailure');ET.SubElement(restart,'Interval').text='PT1M';ET.SubElement(restart,'Count').text='999'
         path=root/(name+'-task.xml');ET.ElementTree(task).write(path,encoding='utf-16',xml_declaration=True)
         subprocess.run(['schtasks','/Create','/TN',name,'/XML',str(path)],check=True);subprocess.run(['schtasks','/Run','/TN',name],check=True);return str(path)
