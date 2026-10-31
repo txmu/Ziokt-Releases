@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 import zipfile
 import xml.etree.ElementTree as ET
 REPOSITORY='txmu/Ziokt-Releases'
-SERVICES={'gateway':('ziokt.pyz',['gateway','serve']),'mcp':('ziokt.pyz',['mcp','serve']),'content':('ziokt.pyz',[]),'effort':('ziokt.pyz',['effort-web']),'openci':('openci.pyz',[])}
+SERVICES={'gateway':('ziokt.pyz',['gateway','serve']),'mcp':('ziokt.pyz',['mcp','serve']),'content':('ziokt.pyz',[]),'ufs-protocols':('ziokt.pyz',[]),'effort':('ziokt.pyz',['effort-web']),'openci':('openci.pyz',[])}
 MAINNET_ORIGIN='https://app.ziokt.com/mainnet/'
 
 # BEGIN GENERATED VERIFIED GUARDS
@@ -286,10 +286,19 @@ def service_control(root,operation,selection='all'):
             elif operation=='restart':command=['launchctl','kickstart','-k',target]
             else:command=None
         elif os.name=='nt':
+            if operation in {'stop','restart','uninstall'}:
+                subprocess.run(['schtasks','/End','/TN',name],capture_output=True)
+                deadline=__import__('time').monotonic()+20
+                while True:
+                    state=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',"[int](Get-ScheduledTask -TaskName '"+name+"' -ErrorAction Stop).State"],capture_output=True,text=True,timeout=10)
+                    if state.returncode==0 and state.stdout.strip()!='4':break
+                    if __import__('time').monotonic()>=deadline:raise RuntimeError('scheduled daemon did not stop: '+name)
+                    __import__('time').sleep(.2)
             command=['schtasks',{'start':'/Run','stop':'/End','status':'/Query','enable':'/Change','disable':'/Change','uninstall':'/Delete'}.get(operation,'/Query'),'/TN',name]
+            if operation=='stop':command=['schtasks','/Query','/TN',name]
             if operation in {'enable','disable'}:command.append('/ENABLE' if operation=='enable' else '/DISABLE')
             if operation=='uninstall':command.append('/F')
-            if operation=='restart':subprocess.run(['schtasks','/End','/TN',name],capture_output=True);command=['schtasks','/Run','/TN',name]
+            if operation=='restart':command=['schtasks','/Run','/TN',name]
             if operation=='logs':command=None
         else:raise ValueError('unsupported service backend')
         if command:
@@ -310,7 +319,9 @@ def command(root,service,config=None,port=8768):
     config=Path(config).resolve()
     if config.is_symlink() or not config.is_file():raise ValueError('existing regular service config required')
     if os.name!='nt' and config.stat().st_mode&0o077:raise ValueError('service config must be owner-only')
-    if service=='content':return [python_executable(root),'-c',"import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module('ziokt.content_server',run_name='__main__')",str(binary),'--config',str(config)]
+    if service in {'content','ufs-protocols'}:
+        module='ziokt.content_server' if service=='content' else 'ziokt.ufs_protocols'
+        return [python_executable(root),'-c',"import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module("+repr(module)+",run_name='__main__')",str(binary),'--config',str(config)]
     return [python_executable(root),str(binary),*args,'--config',str(config)]
 
 
