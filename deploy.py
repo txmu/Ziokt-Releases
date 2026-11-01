@@ -876,6 +876,9 @@ def main():
     q=sub.add_parser('mainnet',help='Join both public chains and enable their persistent services by default')
     q.add_argument('--network',default='ziokt-main');q.add_argument('--create',action='store_true');q.add_argument('--dna-network');q.add_argument('--business-chain',choices=['primary','dna'],default='primary');q.add_argument('--bootstrap-url');q.add_argument('--bootstrap-file',type=Path);q.add_argument('--sha256');q.add_argument('--prepare-only',action='store_true');q.add_argument('--advertise-host');q.add_argument('--p2p-port',type=int);q.add_argument('--dna-p2p-port',type=int);q.add_argument('--service-prefix',default='ziokt');q.add_argument('--proxy');q.add_argument('--port-profile',choices=['manifest','auto','trial','standard'],default='auto');q.add_argument('--http-port-offset',type=int);q.add_argument('--file-port-offset',type=int);q.add_argument('--join-script',type=Path);q.add_argument('--join-script-sha256')
     q=sub.add_parser('service',help='Manage this installation\'s daemons without deleting their data');q.add_argument('operation',choices=['start','stop','restart','status','logs','enable','disable','uninstall']);q.add_argument('--name',default='all')
+    q=sub.add_parser('checkpoint-verify',help='Compare signed dual-chain checkpoints from explicitly trusted HTTPS sources; does not install them')
+    q.add_argument('--policy',type=Path,required=True);q.add_argument('--source',action='append',required=True);q.add_argument('--quorum',type=int,default=2)
+    q.add_argument('--verifier',type=Path,help='Path to the matching Ziokt source verifier')
     for name in ('plan','install'):
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
@@ -890,6 +893,14 @@ def main():
     sub.add_parser('companion-status');sub.add_parser('companion-tunnel')
     q_call=sub.add_parser('call-tool');q_call.add_argument('name');q_call.add_argument('--arguments',default='{}')
     a=p.parse_args();root=a.root.expanduser().absolute()
+    if a.action=='checkpoint-verify':
+        here=Path(__file__).resolve().parent
+        candidates=[here/'Ziokt/tools/verify_peer_checkpoints.py',here.parent/'Ziokt/tools/verify_peer_checkpoints.py',here/'verify_peer_checkpoints.py']
+        verifier=a.verifier or next((path for path in candidates if path.is_file()),None)
+        if verifier is None:raise ValueError('Ziokt source verifier not found; provide --verifier')
+        command=[sys.executable,str(verifier),'--policy',str(a.policy),'--quorum',str(a.quorum)]
+        for source in a.source:command.extend(['--source',source])
+        subprocess.run(command,check=True);return
     if a.action=='service':print(json.dumps(service_control(root,a.operation,a.name),ensure_ascii=False,indent=2));return
     if a.action == 'bootstrap':
         if a.install:
