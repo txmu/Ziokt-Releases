@@ -234,9 +234,10 @@ def join_network(root,options):
     if subprocess.run([python,'-c','import cryptography'],capture_output=True).returncode:
         runtime(root,getattr(options,'proxy',None));python=python_executable(root)
     command=[python,str(script),'--root',str(root/'network'),'--business-chain',getattr(options,'business_chain','primary'),'--service-prefix',getattr(options,'service_prefix','ziokt')]
-    for option in ('bootstrap_url','bootstrap_file','sha256','dna_network','advertise_host','p2p_port','dna_p2p_port','port_profile','http_port_offset','file_port_offset'):
+    for option in ('bootstrap_url','bootstrap_file','sha256','dna_network','advertise_host','p2p_port','dna_p2p_port','port_profile','http_port_offset','file_port_offset','checkpoint_policy','checkpoint_quorum','checkpoint_bundle'):
         value=getattr(options,option,None)
         if value is not None:command.extend(['--'+option.replace('_','-'),str(value)])
+    for s in (getattr(options,'checkpoint_source',None) or []):command.extend(['--checkpoint-source',str(s)])
     network=getattr(options,'network','ziokt-main')
     if getattr(options,'create',False):command.extend(['--create',network])
     elif network!='ziokt-main':command.extend(['--custom-network','--expected-network',network])
@@ -875,10 +876,14 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,default=Path.home()/'.local/share/ziokt-node');sub=p.add_subparsers(dest='action',required=True)
     q=sub.add_parser('mainnet',help='Join both public chains and enable their persistent services by default')
     q.add_argument('--network',default='ziokt-main');q.add_argument('--create',action='store_true');q.add_argument('--dna-network');q.add_argument('--business-chain',choices=['primary','dna'],default='primary');q.add_argument('--bootstrap-url');q.add_argument('--bootstrap-file',type=Path);q.add_argument('--sha256');q.add_argument('--prepare-only',action='store_true');q.add_argument('--advertise-host');q.add_argument('--p2p-port',type=int);q.add_argument('--dna-p2p-port',type=int);q.add_argument('--service-prefix',default='ziokt');q.add_argument('--proxy');q.add_argument('--port-profile',choices=['manifest','auto','trial','standard'],default='auto');q.add_argument('--http-port-offset',type=int);q.add_argument('--file-port-offset',type=int);q.add_argument('--join-script',type=Path);q.add_argument('--join-script-sha256')
+    q.add_argument('--checkpoint-policy',type=Path);q.add_argument('--checkpoint-source',action='append');q.add_argument('--checkpoint-quorum',type=int,default=2);q.add_argument('--checkpoint-bundle',type=Path)
     q=sub.add_parser('service',help='Manage this installation\'s daemons without deleting their data');q.add_argument('operation',choices=['start','stop','restart','status','logs','enable','disable','uninstall']);q.add_argument('--name',default='all')
-    q=sub.add_parser('checkpoint-verify',help='Compare signed dual-chain checkpoints from explicitly trusted HTTPS sources; does not install them')
+    q=sub.add_parser('checkpoint-verify',help='Compare signed dual-chain checkpoints from explicitly trusted HTTPS sources; supports optional store import and materialization')
     q.add_argument('--policy',type=Path,required=True);q.add_argument('--source',action='append',required=True);q.add_argument('--quorum',type=int,default=2)
+    q.add_argument('--import-to',type=Path);q.add_argument('--materialize-to',type=Path)
     q.add_argument('--verifier',type=Path,help='Path to the matching Ziokt source verifier')
+    q=sub.add_parser('checkpoint-publish',help='Publish and sign a dual-chain bootstrap checkpoint bundle from a running node')
+    q.add_argument('--node-root',type=Path,default=Path.home()/'.local/share/ziokt-production');q.add_argument('--config',type=Path);q.add_argument('--output-bundle',type=Path,required=True);q.add_argument('--output-sha256',type=Path);q.add_argument('--web-dir',type=Path);q.add_argument('--store',type=Path);q.add_argument('--publisher',type=Path)
     for name in ('plan','install'):
         q=sub.add_parser(name);q.add_argument('--repository',default=REPOSITORY);q.add_argument('--catalog-sha256');q.add_argument('--artifact',action='append',default=[]);q.add_argument('--profile',choices=['gateway','openci','portable']);q.add_argument('--runtime',action='store_true');q.add_argument('--include',action='append',default=[]);q.add_argument('--exclude',action='append',default=[]);q.add_argument('--proxy');q.add_argument('--confirm');q.add_argument('--yes',action='store_true')
     q=sub.add_parser('enable');q.add_argument('service',choices=SERVICES);q.add_argument('--config',type=Path);q.add_argument('--port',type=int,default=8768)
@@ -900,6 +905,20 @@ def main():
         if verifier is None:raise ValueError('Ziokt source verifier not found; provide --verifier')
         command=[sys.executable,str(verifier),'--policy',str(a.policy),'--quorum',str(a.quorum)]
         for source in a.source:command.extend(['--source',source])
+        if getattr(a,'import_to',None):command.extend(['--import-to',str(a.import_to)])
+        if getattr(a,'materialize_to',None):command.extend(['--materialize-to',str(a.materialize_to)])
+        subprocess.run(command,check=True);return
+    if a.action=='checkpoint-publish':
+        here=Path(__file__).resolve().parent
+        candidates=[here/'Ziokt/tools/publish_checkpoint.py',here.parent/'Ziokt/tools/publish_checkpoint.py',here/'publish_checkpoint.py']
+        publisher=a.publisher or next((path for path in candidates if path.is_file()),None)
+        if publisher is None:raise ValueError('Ziokt source publisher not found; provide --publisher')
+        command=[sys.executable,str(publisher),'--output-bundle',str(a.output_bundle)]
+        if getattr(a,'config',None):command.extend(['--config',str(a.config)])
+        if getattr(a,'node_root',None):command.extend(['--node-root',str(a.node_root)])
+        if getattr(a,'output_sha256',None):command.extend(['--output-sha256',str(a.output_sha256)])
+        if getattr(a,'web_dir',None):command.extend(['--web-dir',str(a.web_dir)])
+        if getattr(a,'store',None):command.extend(['--store',str(a.store)])
         subprocess.run(command,check=True);return
     if a.action=='service':print(json.dumps(service_control(root,a.operation,a.name),ensure_ascii=False,indent=2));return
     if a.action == 'bootstrap':
